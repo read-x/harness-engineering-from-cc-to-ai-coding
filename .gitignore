@@ -1,0 +1,12 @@
+/*
+!/.gitignore
+!/README.md
+!/README.en.md
+!/.github/
+/.github/*
+!/.github/workflows/
+!/.github/workflows/**
+!/book/
+!/book/**
+/book/book/
+**/.DS_Store

@@ -1,0 +1,16 @@
+[book]
+authors = ["Zhang Alex"]
+language = "zh"
+multilingual = false
+src = "src"
+title = "驾驭工程 — 从 Claude Code 源码到 AI 编码最佳实践"
+description = "基于 Claude Code v2.1.88 逆向工程源码的 AI Agent 驾驭工程实战指南"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+site-url = "/harness-engineering-from-cc-to-ai-coding/"
