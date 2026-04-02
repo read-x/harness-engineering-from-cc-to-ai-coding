@@ -12,4 +12,10 @@
 !/book-en/
 !/book-en/**
 /book-en/book/
+!/.claude/
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/skillify/
+!/.claude/skills/skillify/**
 **/.DS_Store
