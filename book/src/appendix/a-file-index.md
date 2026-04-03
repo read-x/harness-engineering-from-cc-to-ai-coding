@@ -97,6 +97,27 @@
 | `tools/AgentTool/agentMemory.ts` | 子 Agent 持久化与 VCS 快照 | 第24章 |
 | `services/autoDream/autoDream.ts` | 夜间记忆整合与修剪 | 第24章 |
 
+## 遥测与可观测性
+
+| 文件 | 职责 | 相关章节 |
+|------|------|---------|
+| `services/analytics/index.ts` | 事件入口，队列-附着模式，PII 标记类型 | 第29章 |
+| `services/analytics/sink.ts` | 双路分发（Datadog + 1P），采样 | 第29章 |
+| `services/analytics/firstPartyEventLogger.ts` | OTel BatchLogRecordProcessor 集成 | 第29章 |
+| `services/analytics/firstPartyEventLoggingExporter.ts` | 自定义 Exporter，磁盘持久化重试 | 第29章 |
+| `services/analytics/metadata.ts` | 事件元数据，工具名清洗，PII 分级 | 第29章 |
+| `services/analytics/datadog.ts` | Datadog 允许列表，批量刷新 | 第29章 |
+| `services/analytics/sinkKillswitch.ts` | 远程熔断（tengu_frond_boric） | 第29章 |
+| `services/api/logging.ts` | API 三事件模型（query/success/error） | 第29章 |
+| `services/api/withRetry.ts` | 重试遥测，网关指纹检测 | 第29章 |
+| `utils/debug.ts` | 调试日志，--debug 标志 | 第29章 |
+| `utils/diagLogs.ts` | PII-free 容器诊断 | 第29章 |
+| `utils/errorLogSink.ts` | 错误文件日志 | 第29章 |
+| `utils/telemetry/sessionTracing.ts` | OTel span，三级追踪 | 第29章 |
+| `utils/telemetry/perfettoTracing.ts` | Perfetto 可视化追踪 | 第29章 |
+| `utils/gracefulShutdown.ts` | 级联超时优雅关闭 | 第29章 |
+| `cost-tracker.ts` | 成本追踪，会话间持久化 | 第29章 |
+
 ## 配置与状态
 
 | 文件 | 职责 | 相关章节 |

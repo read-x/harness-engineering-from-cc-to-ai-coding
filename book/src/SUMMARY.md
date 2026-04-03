@@ -64,6 +64,7 @@
 - [第26章：上下文管理作为核心能力](./part7/ch26.md)
 - [第27章：生产级 AI 编码模式](./part7/ch27.md)
 - [第28章：Claude Code 的不足之处](./part7/ch28.md)
+- [第29章：可观测性工程 — 从 logEvent 到生产级遥测](./part7/ch29.md)
 
 ---
 
@@ -73,3 +74,4 @@
 - [附录 B：环境变量参考](./appendix/b-env-vars.md)
 - [附录 C：术语表](./appendix/c-glossary.md)
 - [附录 D：89 个 Feature Flag 完整清单](./appendix/d-feature-flags.md)
+- [附录 E：版本演化记录](./appendix/e-version-evolution.md)

@@ -101,3 +101,26 @@
 | 变量 | 效果 | 默认值 |
 |------|------|-------|
 | `CLAUDE_CONFIG_DIR` | 覆盖 Claude 配置目录 | `~/.claude` |
+
+---
+
+## 版本演化：v2.1.91 新增变量
+
+| 变量 | 效果 | 说明 |
+|------|------|------|
+| `CLAUDE_CODE_AGENT_COST_STEER` | 子代理成本引导 | 控制多代理场景下的资源消耗 |
+| `CLAUDE_CODE_RESUME_THRESHOLD_MINUTES` | 会话恢复时间阈值 | 控制会话恢复的时间窗口 |
+| `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD` | 会话恢复 Token 阈值 | 控制会话恢复的 Token 预算 |
+| `CLAUDE_CODE_USE_ANTHROPIC_AWS` | AWS 认证路径 | 启用 Anthropic AWS 基础设施认证 |
+| `CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH` | 跳过 AWS 认证 | AWS 不可用时的回退路径 |
+| `CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL` | 禁用 Claude API 技能 | 企业合规场景控制 |
+| `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE` | 插件市场容错 | 市场获取失败时保留缓存版本 |
+| `CLAUDE_CODE_REMOTE_SETTINGS_PATH` | 远程设置路径覆盖 | 企业部署自定义设置 URL |
+
+### v2.1.91 移除的变量
+
+| 变量 | 原效果 | 移除原因 |
+|------|--------|---------|
+| `CLAUDE_CODE_DISABLE_COMMAND_INJECTION_CHECK` | 禁用命令注入检查 | Tree-sitter 基础设施整体移除 |
+| `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` | 禁用鼠标点击 | 功能废弃 |
+| `CLAUDE_CODE_MCP_INSTR_DELTA` | MCP 指令增量 | 功能重构 |
