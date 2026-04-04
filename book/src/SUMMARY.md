@@ -56,6 +56,7 @@
 - [第20c章：Ultraplan — 远程多代理规划](./part6/ch20c.md)
 - [第21章：Effort、Fast Mode 与 Thinking](./part6/ch21.md)
 - [第22章：技能系统 — 从内置到用户自定义](./part6/ch22.md)
+- [第22b章：插件系统 — 从打包到市场的扩展工程](./part6/ch22b.md)
 - [第23章：未发布功能管线 — 89 个 Feature Flag 背后的路线图](./part6/ch23.md)
 - [第24章：跨会话记忆 — 从遗忘到持久学习](./part6/ch24.md)
 
@@ -68,6 +69,7 @@
 - [第27章：生产级 AI 编码模式](./part7/ch27.md)
 - [第28章：Claude Code 的不足之处](./part7/ch28.md)
 - [第29章：可观测性工程 — 从 logEvent 到生产级遥测](./part7/ch29.md)
+- [第30章：构建你自己的 AI Agent — 从 Claude Code 模式到实战](./part7/ch30.md)
 
 ---
 

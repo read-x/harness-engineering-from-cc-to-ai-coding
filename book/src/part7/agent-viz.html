@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Review Agent - Interactive Visualization</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 1.5em; margin-bottom: 8px; color: #58a6ff; }
+  .subtitle { color: #8b949e; margin-bottom: 24px; font-size: 0.9em; }
+
+  /* Controls */
+  .controls { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+  .btn { padding: 8px 16px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+  .btn:hover { background: #30363d; border-color: #58a6ff; }
+  .btn.active { background: #1f6feb; border-color: #58a6ff; color: white; }
+  .speed-label { color: #8b949e; font-size: 13px; }
+
+  /* Legend */
+  .legend { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8b949e; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+
+  /* Main viz */
+  svg { width: 100%; background: #161b22; border-radius: 8px; border: 1px solid #30363d; }
+
+  /* Tooltip */
+  .tooltip { position: absolute; background: #1c2128; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; font-size: 13px; max-width: 400px; pointer-events: none; opacity: 0; transition: opacity 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.4); z-index: 100; }
+  .tooltip h4 { color: #58a6ff; margin-bottom: 6px; }
+  .tooltip .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-right: 4px; }
+  .tooltip code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #79c0ff; }
+
+  /* Info panel */
+  .info-panel { margin-top: 16px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; min-height: 80px; }
+  .info-panel h3 { color: #58a6ff; font-size: 14px; margin-bottom: 8px; }
+  .info-panel p { font-size: 13px; line-height: 1.6; color: #8b949e; }
+  .info-panel .highlight { color: #c9d1d9; }
+  .finding { padding: 8px 12px; margin: 6px 0; border-radius: 6px; font-size: 12px; border-left: 3px solid; }
+  .finding.critical { border-color: #f85149; background: rgba(248,81,73,0.1); }
+  .finding.warning { border-color: #d29922; background: rgba(210,153,34,0.1); }
+  .finding.info { border-color: #58a6ff; background: rgba(88,166,255,0.1); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Code Review Agent</h1>
+  <div class="subtitle">Interactive Agent Loop Visualization - Multi-turn Review with Tools & Skills</div>
+
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+    <span class="speed-label">Speed:</span>
+    <button class="btn speed" data-speed="2000">Slow</button>
+    <button class="btn speed active" data-speed="1000">Normal</button>
+    <button class="btn speed" data-speed="400">Fast</button>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div>L1 Prompt</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div>L2 Context</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div>L3 Tool</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f47067"></div>L4 Security</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#bc8cff"></div>L5 Resilience</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#39d353"></div>L6 Observe</div>
+  </div>
+
+  <svg id="viz" viewBox="0 0 1060 620"></svg>
+
+  <div class="info-panel" id="info">
+    <h3>Agent Loop</h3>
+    <p>Click <strong>Play</strong> to watch the Agent review code step by step. Each step shows how the six architectural layers work together.</p>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const svg = d3.select("#viz");
+const tooltip = d3.select("#tooltip");
+const info = d3.select("#info");
+
+// Actor columns
+const actors = [
+  { id: "user", label: "User / CLI", x: 80, color: "#8b949e" },
+  { id: "agent", label: "Agent Loop", x: 300, color: "#58a6ff" },
+  { id: "tools", label: "Tools", x: 520, color: "#d29922" },
+  { id: "llm", label: "LLM Backend", x: 740, color: "#bc8cff" },
+  { id: "bash", label: "Bash Sandbox", x: 940, color: "#3fb950" },
+];
+
+// Steps
+const steps = [
+  {
+    id: 0, from: "user", to: "agent", label: "--diff my.diff",
+    layer: "L2", color: "#3fb950",
+    info: "<h3>Step 1: Input</h3><p class='highlight'>User provides a Git diff file. The Agent loads it and applies token budget controls.</p><p>Layer: <strong>L2 Context Management</strong> - Budget controls decide which files to include and which to truncate.</p>"
+  },
+  {
+    id: 1, from: "agent", to: "agent", label: "Parse diff + Budget",
+    layer: "L2", color: "#3fb950", self: true,
+    info: "<h3>Step 2: Context Budget</h3><p class='highlight'>5 files detected, 10K tokens total. Per-file budget: 5K tokens. Files exceeding budget are truncated with metadata annotation.</p><p><code>[Truncated: full file has 500 lines, showing first 120]</code></p>"
+  },
+  {
+    id: 2, from: "agent", to: "llm", label: "Turn 1: Review agent.rs",
+    layer: "L1", color: "#58a6ff",
+    info: "<h3>Step 3: Turn 1 - Review</h3><p class='highlight'>Agent sends the diff of <code>agent.rs</code> to the LLM with the Constitution prompt (review principles + output format).</p><p>The system prompt has two layers: static Constitution + dynamic Runtime (file list, language rules).</p>"
+  },
+  {
+    id: 3, from: "llm", to: "agent", label: "findings: [{Warning, ...}]",
+    layer: "L1", color: "#58a6ff", reverse: true,
+    info: "<h3>Step 4: Findings</h3><p class='highlight'>LLM returns structured JSON findings.</p><div class='finding warning'>Warning: follow-up LLM calls bypass with_retry, inconsistent error handling</div><div class='finding warning'>Warning: system_prompt cloned on every retry attempt</div>"
+  },
+  {
+    id: 4, from: "agent", to: "llm", label: "Turn 2: What next?",
+    layer: "L3", color: "#d29922",
+    info: "<h3>Step 5: Turn 2 - Decision</h3><p class='highlight'>Agent asks the LLM what to do next. Available actions: done, review_related, use_tool (bash or skill).</p><p>The LLM can request read-only bash commands or specialized analysis skills.</p>"
+  },
+  {
+    id: 5, from: "llm", to: "agent", label: '{"action":"use_tool","tool":"bash"}',
+    layer: "L3", color: "#d29922", reverse: true,
+    info: "<h3>Step 6: Tool Request</h3><p class='highlight'>LLM requests: <code>{\"action\": \"use_tool\", \"tool\": \"bash\", \"input\": \"grep -rn 'LlmBackend' src/\"}</code></p><p>Reason: need to verify trait definition referenced in the diff.</p>"
+  },
+  {
+    id: 6, from: "agent", to: "tools", label: "execute_tool(bash, grep...)",
+    layer: "L4", color: "#f47067",
+    info: "<h3>Step 7: Security Check</h3><p class='highlight'>Tools module validates the command:</p><p>1. Whitelist check: <code>grep</code> is in ALLOWED_COMMANDS</p><p>2. Metacharacter check: no <code>; | & ` $ ( )</code></p><p>3. Redirect check: no <code>></code></p><p>All checks pass. Command is safe to execute.</p>"
+  },
+  {
+    id: 7, from: "tools", to: "bash", label: "Command::new(grep).args([...])",
+    layer: "L4", color: "#f47067",
+    info: "<h3>Step 8: Sandbox Execution</h3><p class='highlight'>Direct execution via <code>Command::new(\"grep\")</code> - NOT <code>sh -c</code>.</p><p>30-second timeout. 50KB output cap. No shell interpretation.</p>"
+  },
+  {
+    id: 8, from: "bash", to: "tools", label: "src/llm.rs:50: pub trait...",
+    layer: "L6", color: "#39d353", reverse: true,
+    info: "<h3>Step 9: Tool Result</h3><p class='highlight'>Bash returns: <code>src/llm.rs:50: pub trait LlmBackend: Send + Sync</code></p><p>Result is captured and will be fed back to the LLM in the next turn.</p>"
+  },
+  {
+    id: 9, from: "tools", to: "agent", label: "ToolResult { success: true }",
+    layer: "L6", color: "#39d353", reverse: true,
+    info: "<h3>Step 10: Result Feedback</h3><p class='highlight'>Tool result appended to context. Agent loop continues to next decision.</p><p>Tool calls used: 1/3 (max 3 per file)</p>"
+  },
+  {
+    id: 10, from: "agent", to: "llm", label: "Turn 3: Next? (with tool results)",
+    layer: "L3", color: "#d29922",
+    info: "<h3>Step 11: Turn 3 - Continue</h3><p class='highlight'>Agent asks LLM again with accumulated tool results. The LLM now has more context to make a decision.</p>"
+  },
+  {
+    id: 11, from: "llm", to: "agent", label: '{"action":"review_related","file":"llm.rs"}',
+    layer: "L3", color: "#d29922", reverse: true,
+    info: "<h3>Step 12: Cross-file Decision</h3><p class='highlight'>LLM decides to review <code>llm.rs</code> because it contains the <code>LlmBackend</code> trait referenced in <code>agent.rs</code>.</p><p>Reason: verify trait contract and error propagation patterns.</p>"
+  },
+  {
+    id: 12, from: "agent", to: "llm", label: "Review llm.rs (cross-file)",
+    layer: "L1", color: "#58a6ff",
+    info: "<h3>Step 13: Cross-file Review</h3><p class='highlight'>Agent sends <code>llm.rs</code> diff with context: \"You found issues in agent.rs. Now review the related file, focus on cross-file interactions.\"</p>"
+  },
+  {
+    id: 13, from: "llm", to: "agent", label: "cross_file_findings: [...]",
+    layer: "L1", color: "#58a6ff", reverse: true,
+    info: "<h3>Step 14: Cross-file Findings</h3><div class='finding warning'>Warning: SSE parser doesn't check response.completed</div><div class='finding warning'>Warning: WebSocket read loop silently drops errors</div><p>Agent merges these with file 1's findings.</p>"
+  },
+  {
+    id: 14, from: "agent", to: "agent", label: "File 1 done. Next: tools.rs",
+    layer: "L5", color: "#bc8cff", self: true,
+    info: "<h3>Step 15: Next File</h3><p class='highlight'>File 1 complete (4 + 2 = 6 findings). Circuit breaker: 0 consecutive failures. Moving to next file.</p><p>Layer: <strong>L5 Resilience</strong> - Circuit breaker tracks success/failure across files.</p>"
+  },
+  {
+    id: 15, from: "agent", to: "llm", label: "Turn 1: Review tools.rs",
+    layer: "L1", color: "#58a6ff",
+    info: "<h3>Step 16: File 2 - Review</h3><p class='highlight'>Reviewing <code>tools.rs</code> - the bash sandbox and skill system implementation.</p>"
+  },
+  {
+    id: 16, from: "llm", to: "agent", label: "Critical: sh -c injection!",
+    layer: "L1", color: "#58a6ff", reverse: true,
+    info: "<h3>Step 17: Critical Finding!</h3><div class='finding critical'>Critical: bash tool uses <code>sh -c</code> which interprets shell metacharacters. <code>cat file; uname -a</code> bypasses the allowlist.</div><p>The Agent found a <strong>real security vulnerability</strong> in its own code.</p>"
+  },
+  {
+    id: 17, from: "agent", to: "llm", label: "Turn 2: What next?",
+    layer: "L3", color: "#d29922",
+    info: "<h3>Step 18: Decision after Critical</h3><p class='highlight'>Agent asks what to do next. Given the Critical security finding, the LLM may request a deep security skill analysis.</p>"
+  },
+  {
+    id: 18, from: "llm", to: "agent", label: '{"action":"use_tool","tool":"skill","input":"security-audit"}',
+    layer: "L3", color: "#d29922", reverse: true,
+    info: "<h3>Step 19: Skill Request</h3><p class='highlight'>LLM requests the <code>security-audit</code> skill for deeper analysis of the security vulnerability.</p>"
+  },
+  {
+    id: 19, from: "agent", to: "agent", label: "Load skill: security-audit",
+    layer: "L1", color: "#58a6ff", self: true,
+    info: "<h3>Step 20: Skill Loaded</h3><p class='highlight'>Agent loads the <code>security-audit</code> skill - a specialized system prompt covering: injection, auth, crypto, data exposure, unsafe code, timing safety.</p><p>The skill replaces the default system prompt for this analysis turn.</p>"
+  },
+  {
+    id: 20, from: "agent", to: "llm", label: "Skill analysis (security prompt)",
+    layer: "L1", color: "#58a6ff",
+    info: "<h3>Step 21: Skill Execution</h3><p class='highlight'>Agent sends <code>tools.rs</code> to the LLM with the security-audit system prompt instead of the default review prompt.</p><p>This gives a focused, deep security analysis rather than a general review.</p>"
+  },
+  {
+    id: 21, from: "llm", to: "agent", label: "deep_security_findings: [...]",
+    layer: "L1", color: "#58a6ff", reverse: true,
+    info: "<h3>Step 22: Deep Findings</h3><div class='finding critical'>Critical: shell metacharacter injection via sh -c</div><div class='finding warning'>Warning: ALLOWED_COMMANDS bypass via path prefix</div><div class='finding warning'>Warning: redirect check too naive (grep pattern false positive)</div>"
+  },
+  {
+    id: 22, from: "agent", to: "user", label: "ReviewReport (JSON)",
+    layer: "L6", color: "#39d353", reverse: true,
+    info: "<h3>Step 23: Final Report</h3><p class='highlight'>Agent aggregates all findings across all files and turns:</p><p><strong>2 files reviewed</strong> | 3 Critical | 5 Warning | 67 seconds</p><p>The report includes findings from: initial review, cross-file analysis, tool-assisted context lookup, and skill-based deep security audit.</p>"
+  },
+];
+
+// Draw actors
+const actorY = 30;
+actors.forEach(a => {
+  svg.append("line").attr("x1", a.x).attr("y1", actorY + 30).attr("x2", a.x).attr("y2", 610)
+    .attr("stroke", "#21262d").attr("stroke-width", 1).attr("stroke-dasharray", "4,4");
+  svg.append("rect").attr("x", a.x - 50).attr("y", actorY - 10).attr("width", 100).attr("height", 28)
+    .attr("rx", 6).attr("fill", "#21262d").attr("stroke", a.color).attr("stroke-width", 1.5);
+  svg.append("text").attr("x", a.x).attr("y", actorY + 8).attr("text-anchor", "middle")
+    .attr("fill", a.color).attr("font-size", 11).attr("font-weight", 600).text(a.label);
+});
+
+// Step rendering
+const startY = 80;
+const stepH = 23;
+let currentStep = -1;
+let playing = false;
+let speed = 1000;
+let timer = null;
+
+function getActorX(id) { return actors.find(a => a.id === id).x; }
+
+function renderStep(idx) {
+  if (idx >= steps.length) { playing = false; return; }
+  const s = steps[idx];
+  const y = startY + idx * stepH;
+  const g = svg.append("g").attr("class", "step").attr("opacity", 0);
+
+  if (s.self) {
+    // Self-arrow (loop)
+    const x = getActorX(s.from);
+    g.append("path")
+      .attr("d", `M${x},${y} C${x+60},${y-10} ${x+60},${y+10} ${x},${y+6}`)
+      .attr("fill", "none").attr("stroke", s.color).attr("stroke-width", 1.5)
+      .attr("marker-end", `url(#arrow-${s.layer})`);
+    g.append("text").attr("x", x + 65).attr("y", y + 4)
+      .attr("fill", s.color).attr("font-size", 10).text(s.label);
+  } else {
+    const x1 = getActorX(s.from);
+    const x2 = getActorX(s.to);
+    const fromX = s.reverse ? x2 : x1;
+    const toX = s.reverse ? x1 : x2;
+
+    // Arrow
+    g.append("line").attr("x1", fromX).attr("y1", y).attr("x2", toX).attr("y2", y)
+      .attr("stroke", s.color).attr("stroke-width", 1.5)
+      .attr("marker-end", `url(#arrow-${s.layer})`);
+
+    // Label
+    const midX = (fromX + toX) / 2;
+    const labelBg = g.append("rect").attr("rx", 3).attr("fill", "#161b22").attr("stroke", s.color)
+      .attr("stroke-width", 0.5).attr("opacity", 0.95);
+    const label = g.append("text").attr("x", midX).attr("y", y - 4)
+      .attr("text-anchor", "middle").attr("fill", s.color).attr("font-size", 9.5)
+      .attr("font-weight", 500).text(s.label);
+
+    // Size bg to text
+    const bbox = label.node().getBBox();
+    labelBg.attr("x", bbox.x - 4).attr("y", bbox.y - 2)
+      .attr("width", bbox.width + 8).attr("height", bbox.height + 4);
+  }
+
+  // Layer badge
+  const badgeX = 16;
+  g.append("rect").attr("x", badgeX - 12).attr("y", y - 7).attr("width", 24).attr("height", 14)
+    .attr("rx", 7).attr("fill", s.color).attr("opacity", 0.2);
+  g.append("text").attr("x", badgeX).attr("y", y + 3).attr("text-anchor", "middle")
+    .attr("fill", s.color).attr("font-size", 8).attr("font-weight", 700).text(s.layer);
+
+  // Animate in
+  g.transition().duration(300).attr("opacity", 1);
+
+  // Click handler
+  g.style("cursor", "pointer").on("click", () => { info.html(s.info); });
+
+  // Hover
+  g.on("mouseover", (event) => {
+    tooltip.html(`<h4>${s.label}</h4><span class="tag" style="background:${s.color}22;color:${s.color}">${s.layer}</span>`)
+      .style("opacity", 1).style("left", (event.pageX + 12) + "px").style("top", (event.pageY - 20) + "px");
+  }).on("mouseout", () => { tooltip.style("opacity", 0); });
+
+  // Update info
+  info.html(s.info);
+  currentStep = idx;
+}
+
+// Arrow markers
+["L1","L2","L3","L4","L5","L6"].forEach((l, i) => {
+  const colors = ["#58a6ff","#3fb950","#d29922","#f47067","#bc8cff","#39d353"];
+  svg.append("defs").append("marker").attr("id", `arrow-${l}`)
+    .attr("viewBox", "0 0 10 10").attr("refX", 9).attr("refY", 5)
+    .attr("markerWidth", 6).attr("markerHeight", 6).attr("orient", "auto")
+    .append("path").attr("d", "M 0 0 L 10 5 L 0 10 z").attr("fill", colors[i]);
+});
+
+// Controls
+function play() {
+  playing = true;
+  d3.select("#btn-play").classed("active", true);
+  d3.select("#btn-pause").classed("active", false);
+  advance();
+}
+
+function advance() {
+  if (!playing) return;
+  if (currentStep >= steps.length - 1) { playing = false; return; }
+  renderStep(currentStep + 1);
+  timer = setTimeout(advance, speed);
+}
+
+function pause() {
+  playing = false;
+  clearTimeout(timer);
+  d3.select("#btn-play").classed("active", false);
+  d3.select("#btn-pause").classed("active", true);
+}
+
+function reset() {
+  pause();
+  currentStep = -1;
+  svg.selectAll(".step").remove();
+  info.html("<h3>Agent Loop</h3><p>Click <strong>Play</strong> to watch the Agent review code step by step.</p>");
+}
+
+function step() {
+  pause();
+  if (currentStep < steps.length - 1) renderStep(currentStep + 1);
+}
+
+d3.select("#btn-play").on("click", play);
+d3.select("#btn-pause").on("click", pause);
+d3.select("#btn-reset").on("click", reset);
+d3.select("#btn-step").on("click", step);
+
+d3.selectAll(".speed").on("click", function() {
+  speed = +d3.select(this).attr("data-speed");
+  d3.selectAll(".speed").classed("active", false);
+  d3.select(this).classed("active", true);
+});
+
+// Auto-play on load
+setTimeout(play, 500);
+</script>
+</body>
+</html>

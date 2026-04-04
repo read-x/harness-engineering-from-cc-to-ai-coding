@@ -19,6 +19,9 @@
 !/scripts/**
 !/specs/
 !/specs/**
+!/examples/
+!/examples/**
+/examples/**/target/
 !/CLAUDE.md
 !/.claude/
 /.claude/*

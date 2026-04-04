@@ -66,6 +66,19 @@ cd book && mdbook serve    # 本地预览 http://localhost:3000
 | `agent-spec-authoring` | 编辑 `.spec.md` 文件时 |
 | `agent-spec-tool-first` | 根据 spec 验收标准验证章节完成度时 |
 
+### 章节写作流程
+
+编写一章的标准流程：
+
+1. **读 Spec** — 先读 `specs/` 下对应的 spec 文件，确认验收标准和边界
+2. **读 Outline** — 读 `docs/book-outline.md`，确认本章在全书中的位置、与前后章的依赖关系
+3. **加载 tech-writer** — 按 tech-writer skill 的 Book Writing Mode 执行 Pre-Flight 检查
+4. **声明预算** — 从 spec 的约束中提取字数和深度层级，向用户确认
+5. **Research** — 验证所有源码引用，确认 `restored-src/` 路径和行号（tech-writer Phase 1）
+6. **Write** — 按章节结构模板写作（tech-writer Phase 2）
+7. **Review** — 启动 3-agent 并行审阅（tech-writer Phase 3）
+8. **Verify** — 用 `agent-spec-tool-first` 验证 spec 中的验收标准全部通过
+
 ## 写作规范
 
 ### 预算制度

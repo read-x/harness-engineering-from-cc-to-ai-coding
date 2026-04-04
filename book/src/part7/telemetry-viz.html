@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>可观测性 — 遥测管线动画</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.layout{display:grid;grid-template-columns:1fr 280px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+svg{width:100%;background:#161b22;border-radius:8px;border:1px solid #30363d}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:#8b949e}
+.legend-dot{width:10px;height:10px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>可观测性 — 遥测管线</h1>
+  <div class="subtitle">logEvent() 从代码到 Datadog/1P Exporter 的完整数据流，PII 过滤节点高亮</div>
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div>Event Source</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f47067"></div>PII Filter</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div>Sink Router</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div>Export Target</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#bc8cff"></div>Debug Channel</div>
+  </div>
+  <div class="layout">
+    <svg id="viz" viewBox="0 0 720 400"></svg>
+    <div class="info" id="info">
+      <h3>遥测管线</h3>
+      <p>Claude Code 的可观测性建立在 <code>logEvent()</code> 函数之上。</p>
+      <p>关键设计：metadata 类型系统<span class="hl">禁止 string 值</span>，从类型层面防止代码/文件路径进入遥测日志。</p>
+    </div>
+  </div>
+</div>
+<script>
+const svg=d3.select("#viz"),info=d3.select("#info");
+
+// Pipeline nodes
+const nodes=[
+  {id:"code",   x:80,  y:50,  w:100, h:30, label:"Code\nlogEvent()",    color:"#58a6ff"},
+  {id:"type",   x:80,  y:120, w:100, h:30, label:"Type Check\nno strings", color:"#f47067"},
+  {id:"sample", x:80,  y:190, w:100, h:30, label:"Sampling\nrate config",  color:"#d29922"},
+  {id:"queue",  x:80,  y:260, w:100, h:30, label:"Event Queue\n(if no sink)", color:"#8b949e"},
+  {id:"sink",   x:280, y:190, w:100, h:30, label:"Sink Router\nattachSink()", color:"#d29922"},
+  {id:"dd",     x:480, y:120, w:110, h:30, label:"Datadog\nStatsD metrics",   color:"#3fb950"},
+  {id:"1p",     x:480, y:190, w:110, h:30, label:"1P Exporter\ndisk persist",  color:"#3fb950"},
+  {id:"otel",   x:480, y:260, w:110, h:30, label:"OTel Traces\nperfetto/session", color:"#3fb950"},
+  {id:"debug",  x:280, y:330, w:100, h:30, label:"Debug Logs\nstderr/file",    color:"#bc8cff"},
+  {id:"pii",    x:280, y:50,  w:120, h:30, label:"PII Sanitizer\n_PROTO_ prefix", color:"#f47067"},
+];
+
+// Edges
+const edges=[
+  {from:"code",to:"type"}, {from:"type",to:"sample"}, {from:"sample",to:"queue"},
+  {from:"sample",to:"sink"}, {from:"queue",to:"sink",label:"drain on attach"},
+  {from:"sink",to:"dd"}, {from:"sink",to:"1p"}, {from:"sink",to:"otel"},
+  {from:"code",to:"debug",dash:true}, {from:"sink",to:"pii",label:"sanitize tool names"},
+  {from:"pii",to:"dd",dash:true},
+];
+
+// Arrow marker
+svg.append("defs").append("marker").attr("id","ah").attr("viewBox","0 0 10 10")
+  .attr("refX",9).attr("refY",5).attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+  .append("path").attr("d","M0 0L10 5L0 10z").attr("fill","#484f58");
+
+// Draw edges
+edges.forEach(e=>{
+  const n1=nodes.find(n=>n.id===e.from),n2=nodes.find(n=>n.id===e.to);
+  svg.append("line").attr("x1",n1.x+n1.w/2).attr("y1",n1.y+n1.h)
+    .attr("x2",n2.x+n2.w/2).attr("y2",n2.y)
+    .attr("stroke","#21262d").attr("stroke-width",1).attr("stroke-dasharray",e.dash?"4,3":"none")
+    .attr("marker-end","url(#ah)");
+  if(e.label){
+    const mx=(n1.x+n1.w/2+n2.x+n2.w/2)/2, my=(n1.y+n1.h+n2.y)/2;
+    svg.append("text").attr("x",mx+5).attr("y",my).attr("fill","#484f58").attr("font-size",8).text(e.label);
+  }
+});
+
+// Draw nodes
+const nodeGs={};
+nodes.forEach(n=>{
+  const g=svg.append("g").attr("class","node").attr("data-id",n.id).style("cursor","pointer");
+  g.append("rect").attr("x",n.x).attr("y",n.y).attr("width",n.w).attr("height",n.h)
+    .attr("rx",4).attr("fill","#0d1117").attr("stroke",n.color).attr("stroke-width",1.5);
+  n.label.split("\n").forEach((l,i)=>{
+    g.append("text").attr("x",n.x+n.w/2).attr("y",n.y+14+i*12).attr("text-anchor","middle")
+      .attr("fill",n.color).attr("font-size",9).attr("font-weight",i===0?600:400).text(l);
+  });
+  nodeGs[n.id]=g;
+});
+
+// Animation: event flowing through pipeline
+const flow=[
+  {node:"code",info:`<h3>logEvent("tool_use", {tool: "Read", duration_ms: 42})</h3><p class="hl">代码中调用 logEvent()。metadata 值只允许 boolean/number/undefined。</p><p><code>AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS</code></p><p>这个类型名本身就是文档——强制开发者意识到 PII 风险。</p>`},
+  {node:"type",info:`<h3>类型检查：no strings</h3><p class="hl">TypeScript 类型系统在编译时拦截：</p><p><code>metadata: { [key: string]: boolean | number | undefined }</code></p><p>如果传入 <code>{ path: "/home/user/secret.txt" }</code> → 编译错误</p><p>这是<strong>类型驱动安全</strong>的经典案例。</p>`},
+  {node:"sample",info:`<h3>采样</h3><p class="hl">事件采样率由 GrowthBook 动态配置控制。</p><p>被采样的事件会附加 <code>sample_rate</code> 字段，让分析端能够还原真实频率。</p><p>未被采样的事件直接丢弃，不进入 sink。</p>`},
+  {node:"sink",info:`<h3>Sink Router</h3><p class="hl">事件分发到多个 sink：</p><p>• <strong>Datadog</strong> — StatsD 格式的 metrics</p><p>• <strong>1P Exporter</strong> — Anthropic 自有的遥测管线（磁盘持久化 + 重试）</p><p>• <strong>OTel Traces</strong> — 分布式追踪（perfetto + session tracing）</p><p>如果 sink 尚未 attach，事件进入队列等待 drain。</p>`},
+  {node:"pii",info:`<h3>PII Sanitizer</h3><p class="hl">工具名称中可能包含用户路径（如 "Read /home/user/secret.txt"）</p><p><code>sanitizeToolNameForAnalytics()</code> 移除路径信息，只保留工具名。</p><p><code>_PROTO_</code> 前缀用于标记已清理的字段。</p>`},
+  {node:"dd",info:`<h3>Datadog</h3><p class="hl">StatsD 格式的 metrics 发送到 Datadog Agent。</p><p>用于实时监控：API 延迟、工具调用频率、错误率。</p>`},
+  {node:"1p",info:`<h3>1P Exporter</h3><p class="hl">Anthropic 的第一方遥测管线：</p><p>• 磁盘持久化：网络不可用时先写磁盘</p><p>• 二次退避重试：失败后指数退避</p><p>• 401 降级：认证失败时停止重试</p><p>• 优雅关闭：5 秒超时确保数据不丢</p>`},
+  {node:"otel",info:`<h3>OTel Traces</h3><p class="hl">分布式追踪，两个 scope：</p><p>• <code>com.anthropic.claude_code.tracing</code> — session tracing</p><p>• <code>com.anthropic.claude_code.events</code> — event tracing (perfetto)</p><p>每个 Agent Loop 轮次是一个 span，工具调用是子 span。</p>`},
+  {node:"debug",info:`<h3>Debug Channels</h3><p class="hl">三个独立的调试通道：</p><p>• <code>debug()</code> — 开发时的 console 输出</p><p>• <code>diagLogs</code> — 结构化诊断日志</p><p>• <code>errorLogSink</code> — 错误专用通道</p><p>与遥测管线独立，不受采样和 PII 过滤影响。</p>`},
+];
+
+let step=-1,playing=false,speed=1000,timer=null;
+
+function highlight(id){
+  // Reset all
+  Object.values(nodeGs).forEach(g=>g.select("rect").attr("stroke-width",1.5).attr("fill","#0d1117"));
+  // Highlight
+  const n=nodes.find(n=>n.id===id);
+  nodeGs[id].select("rect").transition().duration(300).attr("stroke-width",3).attr("fill",d3.color(n.color).copy({opacity:.12}));
+  // Pulse
+  svg.append("rect").attr("x",n.x-2).attr("y",n.y-2).attr("width",n.w+4).attr("height",n.h+4)
+    .attr("rx",6).attr("fill","none").attr("stroke",n.color).attr("stroke-width",2).attr("opacity",.6)
+    .transition().duration(500).attr("opacity",0).remove();
+}
+
+function renderStep(idx){
+  if(idx>=flow.length){playing=false;return;}
+  step=idx;
+  highlight(flow[idx].node);
+  info.html(flow[idx].info);
+}
+
+function play(){playing=true;d3.select("#btn-play").classed("active",true);d3.select("#btn-pause").classed("active",false);advance();}
+function advance(){if(!playing)return;if(step>=flow.length-1){playing=false;return;}renderStep(step+1);timer=setTimeout(advance,speed);}
+function pause(){playing=false;clearTimeout(timer);d3.select("#btn-play").classed("active",false);d3.select("#btn-pause").classed("active",true);}
+function reset(){pause();step=-1;Object.values(nodeGs).forEach(g=>g.select("rect").attr("stroke-width",1.5).attr("fill","#0d1117"));
+  info.html(`<h3>遥测管线</h3><p>点击 Play 观看事件如何从 logEvent() 流向各个 sink。</p>`);}
+
+d3.select("#btn-play").on("click",play);d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",reset);d3.select("#btn-step").on("click",()=>{pause();if(step<flow.length-1)renderStep(step+1);});
+// Click nodes
+nodes.forEach(n=>{ nodeGs[n.id].on("click",()=>{const f=flow.find(f=>f.node===n.id);if(f){pause();const idx=flow.indexOf(f);renderStep(idx);}}); });
+setTimeout(play,600);
+</script>
+</body>
+</html>

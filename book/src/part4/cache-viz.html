@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt Cache — 缓存命中可视化</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.layout{display:grid;grid-template-columns:1fr 300px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+svg{width:100%;background:#161b22;border-radius:8px;border:1px solid #30363d}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat{background:#0d1117;border-radius:6px;padding:8px;text-align:center}
+.stat .val{font-size:1.2em;font-weight:700}
+.stat .label{font-size:10px;color:#8b949e}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:#8b949e}
+.legend-dot{width:10px;height:10px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Prompt Cache — 缓存命中可视化</h1>
+  <div class="subtitle">API 请求中的每个段落如何被缓存匹配：global（跨用户）→ org（组织内）→ null（不缓存）</div>
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+    <span style="margin-left:8px;font-size:12px;color:#8b949e">Scenario:</span>
+    <button class="btn scenario active" data-sc="first">First Request</button>
+    <button class="btn scenario" data-sc="same-user">Same User (2nd)</button>
+    <button class="btn scenario" data-sc="diff-user">Different User</button>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div>Cache HIT</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f47067"></div>Cache MISS</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div>Checking...</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#484f58"></div>No cache_control</div>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-hit" style="color:#3fb950">0</div><div class="label">Tokens Hit</div></div>
+    <div class="stat"><div class="val" id="s-miss" style="color:#f47067">0</div><div class="label">Tokens Miss</div></div>
+    <div class="stat"><div class="val" id="s-save" style="color:#58a6ff">$0.00</div><div class="label">Cost Saved</div></div>
+  </div>
+  <div class="layout">
+    <svg id="viz" viewBox="0 0 780 480"></svg>
+    <div class="info" id="info">
+      <h3>Prompt Cache 架构</h3>
+      <p>Claude API 的缓存基于<span class="hl">前缀匹配</span>——从请求的第一个 token 开始，连续匹配已缓存的前缀。</p>
+      <p>命中的部分收费降低 <strong>90%</strong>（$0.30/MTok → $0.03/MTok）。</p>
+      <p>Claude Code 精心安排 <code>cache_control</code> 断点：静态内容放在前面（global），动态内容放在后面（null）。</p>
+    </div>
+  </div>
+</div>
+<script>
+const svg = d3.select("#viz");
+const info = d3.select("#info");
+
+// Segments of an API request
+const segments = [
+  { id:"attr",   label:"Attribution\nHeader",  scope:"null",   tokens:200,  y:0,  h:35,  desc:"计费归属头（用户身份）— 不缓存" },
+  { id:"prefix", label:"CLI Prompt\nPrefix",   scope:"org",    tokens:3000, y:40, h:55,  desc:"CLI 系统提示词前缀 — org 级缓存" },
+  { id:"static", label:"System Prompt\n(static)", scope:"global", tokens:12000, y:100, h:90, desc:"静态系统提示词（审查原则、工具描述）— global 级缓存，所有用户共享" },
+  { id:"dynamic",label:"System Prompt\n(dynamic)",scope:"null",  tokens:2000, y:195, h:45, desc:"动态内容（当前 PR、文件列表）— 不缓存，每轮重算" },
+  { id:"tools1", label:"Tool Definitions\n(1-20)", scope:"org", tokens:8000, y:245, h:70, desc:"前 20 个工具定义 — org 级缓存" },
+  { id:"tools2", label:"Tool Definitions\n(21-40)",scope:"org", tokens:7000, y:320, h:65, desc:"后 20 个工具定义 — org 级缓存" },
+  { id:"msgs",   label:"Messages\n(conversation)", scope:"none", tokens:15000, y:390, h:80, desc:"对话消息 — 无 cache_control（高度动态）" },
+];
+
+const TOTAL_TOKENS = segments.reduce((s,seg)=>s+seg.tokens,0);
+const COL_LEFT = 30, COL_W = 260, COL_RIGHT = 340, COL_RW = 260;
+const TOP = 30;
+
+// Scenarios
+const scenarios = {
+  "first":     { name:"首次请求", hits:[], desc:"所有段落都是 MISS —— 但 global 和 org 段落会被写入缓存供后续复用。" },
+  "same-user": { name:"同一用户第2次请求", hits:["prefix","static","tools1","tools2"], desc:"静态内容和工具定义命中缓存，节省 ~30K tokens 的计算成本。动态内容和消息仍然 MISS。" },
+  "diff-user": { name:"不同用户", hits:["static"], desc:"只有 global 范围的静态系统提示词命中（跨用户共享）。org 级内容因用户不同而 MISS。" },
+};
+let currentScenario = "first";
+
+function scopeColor(scope) {
+  return scope==="global"?"#3fb950":scope==="org"?"#58a6ff":"#484f58";
+}
+
+// Draw structure labels
+svg.append("text").attr("x",COL_LEFT+COL_W/2).attr("y",18).attr("text-anchor","middle").attr("fill","#8b949e").attr("font-size",11).attr("font-weight",600).text("API Request Segments");
+svg.append("text").attr("x",COL_RIGHT+COL_RW/2).attr("y",18).attr("text-anchor","middle").attr("fill","#8b949e").attr("font-size",11).attr("font-weight",600).text("Cache Match");
+
+// Draw left segments (static)
+const leftG = svg.append("g").attr("transform",`translate(${COL_LEFT},${TOP})`);
+segments.forEach(seg => {
+  const g = leftG.append("g").attr("class","seg").attr("data-id",seg.id).style("cursor","pointer");
+  g.append("rect").attr("x",0).attr("y",seg.y).attr("width",COL_W).attr("height",seg.h)
+    .attr("rx",4).attr("fill","#0d1117").attr("stroke",scopeColor(seg.scope)).attr("stroke-width",1.5);
+  // Label
+  const lines = seg.label.split("\n");
+  lines.forEach((l,i) => {
+    g.append("text").attr("x",10).attr("y",seg.y+18+i*14).attr("fill","#c9d1d9").attr("font-size",11).text(l);
+  });
+  // Scope badge
+  g.append("rect").attr("x",COL_W-55).attr("y",seg.y+4).attr("width",48).attr("height",16).attr("rx",8)
+    .attr("fill",scopeColor(seg.scope)).attr("opacity",.2);
+  g.append("text").attr("x",COL_W-31).attr("y",seg.y+15).attr("text-anchor","middle")
+    .attr("fill",scopeColor(seg.scope)).attr("font-size",9).attr("font-weight",600).text(seg.scope);
+  // Token count
+  g.append("text").attr("x",COL_W-10).attr("y",seg.y+seg.h-6).attr("text-anchor","end")
+    .attr("fill","#484f58").attr("font-size",9).text(`${(seg.tokens/1000).toFixed(0)}K`);
+
+  g.on("click", () => {
+    info.html(`<h3>${seg.label.replace("\n"," ")}</h3><p class="hl">${seg.desc}</p><p>Scope: <code>${seg.scope}</code> | Tokens: <strong>${seg.tokens.toLocaleString()}</strong></p><p>前缀匹配：从 attribution 开始，连续匹配到第一个 MISS 就停止。MISS 之后的所有段落都不会检查缓存。</p>`);
+  });
+});
+
+// Right side: cache match results (animated)
+const rightG = svg.append("g").attr("transform",`translate(${COL_RIGHT},${TOP})`);
+const matchRects = {};
+const matchTexts = {};
+const arrows = {};
+
+segments.forEach(seg => {
+  // Connecting arrow
+  const a = svg.append("line")
+    .attr("x1",COL_LEFT+COL_W).attr("y1",TOP+seg.y+seg.h/2)
+    .attr("x2",COL_RIGHT).attr("y2",TOP+seg.y+seg.h/2)
+    .attr("stroke","#21262d").attr("stroke-width",1).attr("stroke-dasharray","3,3").attr("opacity",0);
+  arrows[seg.id] = a;
+
+  const r = rightG.append("rect").attr("x",0).attr("y",seg.y).attr("width",COL_RW).attr("height",seg.h)
+    .attr("rx",4).attr("fill","#0d1117").attr("stroke","#21262d").attr("stroke-width",1).attr("opacity",0);
+  matchRects[seg.id] = r;
+
+  const t = rightG.append("text").attr("x",COL_RW/2).attr("y",seg.y+seg.h/2+4)
+    .attr("text-anchor","middle").attr("fill","#8b949e").attr("font-size",12).attr("font-weight",600).attr("opacity",0);
+  matchTexts[seg.id] = t;
+});
+
+// Animation
+let step=-1, playing=false, speed=700, timer=null;
+
+function getHitResult(segId) {
+  const sc = scenarios[currentScenario];
+  if(segments.find(s=>s.id===segId).scope==="none") return "skip";
+  return sc.hits.includes(segId) ? "hit" : "miss";
+}
+
+function animateSegment(idx) {
+  if(idx>=segments.length){
+    playing=false;
+    // Show summary
+    const sc = scenarios[currentScenario];
+    let hitTok=0, missTok=0;
+    segments.forEach(s=>{
+      const r=getHitResult(s.id);
+      if(r==="hit") hitTok+=s.tokens;
+      else if(r==="miss") missTok+=s.tokens;
+    });
+    const saved = hitTok * 0.00027; // $0.30-$0.03 = $0.27 per MTok saved
+    d3.select("#s-hit").text((hitTok/1000).toFixed(0)+"K");
+    d3.select("#s-miss").text((missTok/1000).toFixed(0)+"K");
+    d3.select("#s-save").text("$"+saved.toFixed(3));
+    info.html(`<h3>${sc.name} — 结果</h3><p class="hl">${sc.desc}</p><p>Cache HIT: <strong style="color:#3fb950">${(hitTok/1000).toFixed(0)}K tokens</strong></p><p>Cache MISS: <strong style="color:#f47067">${(missTok/1000).toFixed(0)}K tokens</strong></p><p>命中率: <strong>${(hitTok/(hitTok+missTok)*100).toFixed(0)}%</strong></p><p>节省: <strong style="color:#58a6ff">$${saved.toFixed(3)}</strong> per request</p>`);
+    return;
+  }
+  step=idx;
+  d3.select("#step-counter").text?.(`Step ${idx+1}/${segments.length}`);
+  const seg = segments[idx];
+  const result = getHitResult(seg.id);
+
+  // Show arrow
+  arrows[seg.id].transition().duration(200).attr("opacity",1).attr("stroke","#d29922");
+
+  // Show checking state
+  matchRects[seg.id].transition().duration(200).attr("opacity",1).attr("stroke","#d29922");
+  matchTexts[seg.id].text("Checking...").attr("fill","#d29922").transition().duration(200).attr("opacity",1);
+
+  setTimeout(() => {
+    let color, text;
+    if(result==="hit") { color="#3fb950"; text="CACHE HIT"; }
+    else if(result==="miss") { color="#f47067"; text="CACHE MISS"; }
+    else { color="#484f58"; text="No cache_control"; }
+
+    matchRects[seg.id].transition().duration(300).attr("stroke",color).attr("fill",d3.color(color).copy({opacity:0.08}));
+    matchTexts[seg.id].transition().duration(300).text(text).attr("fill",color);
+    arrows[seg.id].transition().duration(300).attr("stroke",color);
+
+    // Update running totals
+    let hitTok=0,missTok=0;
+    for(let i=0;i<=idx;i++){
+      const r=getHitResult(segments[i].id);
+      if(r==="hit") hitTok+=segments[i].tokens;
+      else if(r==="miss") missTok+=segments[i].tokens;
+    }
+    d3.select("#s-hit").text((hitTok/1000).toFixed(0)+"K");
+    d3.select("#s-miss").text((missTok/1000).toFixed(0)+"K");
+    d3.select("#s-save").text("$"+(hitTok*0.00027).toFixed(3));
+
+    info.html(`<h3>${seg.label.replace("\n"," ")}</h3><p class="hl">${seg.desc}</p><p>Result: <strong style="color:${color}">${text}</strong></p><p>Tokens: ${seg.tokens.toLocaleString()} | Scope: <code>${seg.scope}</code></p>`);
+  }, speed*0.4);
+}
+
+function play(){playing=true;d3.select("#btn-play").classed("active",true);d3.select("#btn-pause").classed("active",false);advance();}
+function advance(){if(!playing)return;if(step>=segments.length-1){animateSegment(segments.length);return;}animateSegment(step+1);timer=setTimeout(advance,speed);}
+function pause(){playing=false;clearTimeout(timer);d3.select("#btn-play").classed("active",false);d3.select("#btn-pause").classed("active",true);}
+function resetViz(){pause();step=-1;
+  Object.values(matchRects).forEach(r=>r.attr("opacity",0));
+  Object.values(matchTexts).forEach(t=>t.attr("opacity",0));
+  Object.values(arrows).forEach(a=>a.attr("opacity",0));
+  d3.select("#s-hit").text("0");d3.select("#s-miss").text("0");d3.select("#s-save").text("$0.00");
+  info.html(`<h3>Prompt Cache</h3><p>选择场景并点击 Play 观看缓存匹配过程。</p>`);}
+
+d3.select("#btn-play").on("click",play);
+d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",resetViz);
+d3.select("#btn-step").on("click",()=>{pause();if(step<segments.length)animateSegment(step+1);});
+d3.selectAll(".scenario").on("click",function(){
+  currentScenario=d3.select(this).attr("data-sc");
+  d3.selectAll(".scenario").classed("active",false);d3.select(this).classed("active",true);
+  resetViz();
+});
+setTimeout(play,600);
+</script>
+</body>
+</html>

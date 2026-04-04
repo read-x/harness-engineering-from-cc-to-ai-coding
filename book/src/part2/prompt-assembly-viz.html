@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>系统提示词 — 分层组装动画</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.layout{display:grid;grid-template-columns:1fr 280px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+svg{width:100%;background:#161b22;border-radius:8px;border:1px solid #30363d}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:#8b949e}
+.legend-dot{width:10px;height:10px;border-radius:3px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat{background:#0d1117;border-radius:6px;padding:8px;text-align:center}
+.stat .val{font-size:1.2em;font-weight:700}
+.stat .label{font-size:10px;color:#8b949e}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>系统提示词 — 分层组装</h1>
+  <div class="subtitle">观察 7 个 section 如何逐层叠加为最终的系统提示词，哪些被缓存、哪些每轮重算</div>
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div>Cached (global)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div>Cached (org)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f47067"></div>Uncached (DANGEROUS)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#8b949e"></div>Runtime injected</div>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-cached" style="color:#3fb950">0</div><div class="label">Cached Tokens</div></div>
+    <div class="stat"><div class="val" id="s-uncached" style="color:#f47067">0</div><div class="label">Uncached Tokens</div></div>
+    <div class="stat"><div class="val" id="s-ratio" style="color:#58a6ff">0%</div><div class="label">Cache Ratio</div></div>
+  </div>
+  <div class="layout">
+    <svg id="viz" viewBox="0 0 720 480"></svg>
+    <div class="info" id="info">
+      <h3>系统提示词架构</h3>
+      <p>Claude Code 的系统提示词由 <span class="hl">7 个 section</span> 组装而成。</p>
+      <p>关键设计：<span class="hl">静态段落在前</span>（可缓存），<span class="hl">动态段落在后</span>（每轮重算）。</p>
+      <p>这个顺序不是偶然——Anthropic API 的缓存基于<strong>前缀匹配</strong>。</p>
+    </div>
+  </div>
+</div>
+<script>
+const svg = d3.select("#viz");
+const info = d3.select("#info");
+
+const sections = [
+  { id:"core",    label:"Core Identity",     tokens:2000, cache:"global", color:"#3fb950",
+    desc:"核心身份声明：'You are Claude Code, Anthropic's official CLI...'", fn:"systemPromptSection" },
+  { id:"env",     label:"Environment",        tokens:1500, cache:"global", color:"#3fb950",
+    desc:"环境信息：OS, shell, 工作目录（首次计算后缓存）", fn:"systemPromptSection" },
+  { id:"tools",   label:"Tool Descriptions",  tokens:8000, cache:"org",    color:"#58a6ff",
+    desc:"40+ 工具的描述和使用说明。org 级缓存——同组织用户共享", fn:"systemPromptSection" },
+  { id:"rules",   label:"Behavioral Rules",   tokens:3000, cache:"global", color:"#3fb950",
+    desc:"行为规则：安全约束、输出格式、代码风格。全局共享", fn:"systemPromptSection" },
+  { id:"claudemd",label:"CLAUDE.md",          tokens:2000, cache:"org",    color:"#58a6ff",
+    desc:"用户自定义指令（从 .claude/CLAUDE.md 加载）。org 级缓存", fn:"systemPromptSection" },
+  { id:"remind",  label:"System Reminders",   tokens:1500, cache:"none",   color:"#f47067",
+    desc:"<system-reminder> 动态注入：当前日期、Feature Flag 状态、MCP 指令。DANGEROUS_ 前缀！", fn:"DANGEROUS_uncachedSystemPromptSection" },
+  { id:"memory",  label:"Memory Context",     tokens:800,  cache:"none",   color:"#8b949e",
+    desc:"跨会话记忆（如果启用）。每轮注入最新记忆内容", fn:"runtime injection" },
+];
+
+const LEFT = 40, W = 300, GAP = 8, TOP = 20;
+let totalH = TOP;
+const rects = {}, texts = {};
+
+// Pre-calculate positions
+sections.forEach((s,i) => {
+  s.y = totalH;
+  s.h = Math.max(30, s.tokens / 200);
+  totalH += s.h + GAP;
+});
+
+// Draw target area (right side)
+const RX = 420, RW = 260;
+svg.append("text").attr("x",LEFT+W/2).attr("y",14).attr("text-anchor","middle").attr("fill","#8b949e").attr("font-size",11).attr("font-weight",600).text("Sections (注册顺序)");
+svg.append("text").attr("x",RX+RW/2).attr("y",14).attr("text-anchor","middle").attr("fill","#8b949e").attr("font-size",11).attr("font-weight",600).text("Assembled Prompt");
+
+// Right: assembled prompt area
+svg.append("rect").attr("x",RX).attr("y",TOP).attr("width",RW).attr("height",totalH-TOP)
+  .attr("rx",6).attr("fill","#0d1117").attr("stroke","#21262d").attr("stroke-width",1);
+
+// Draw section slots
+sections.forEach(s => {
+  const g = svg.append("g").attr("class","section").attr("data-id",s.id).style("cursor","pointer");
+
+  // Left: source section
+  const r = g.append("rect").attr("x",LEFT).attr("y",s.y).attr("width",W).attr("height",s.h)
+    .attr("rx",4).attr("fill","#0d1117").attr("stroke","#21262d").attr("stroke-width",1);
+  rects[s.id] = r;
+
+  g.append("text").attr("x",LEFT+10).attr("y",s.y+s.h/2+4).attr("fill","#484f58").attr("font-size",11).text(s.label);
+  g.append("text").attr("x",LEFT+W-10).attr("y",s.y+s.h/2+4).attr("text-anchor","end").attr("fill","#30363d").attr("font-size",9).text(`${(s.tokens/1000).toFixed(1)}K`);
+
+  // Cache badge
+  const badge = s.cache==="global"?"global":s.cache==="org"?"org":s.fn.includes("DANGEROUS")?"DANGER":"runtime";
+  g.append("rect").attr("x",LEFT+W-70).attr("y",s.y+3).attr("width",58).attr("height",14).attr("rx",7)
+    .attr("fill",s.color).attr("opacity",.15);
+  g.append("text").attr("x",LEFT+W-41).attr("y",s.y+13).attr("text-anchor","middle").attr("fill",s.color).attr("font-size",8).attr("font-weight",600).text(badge);
+
+  // Right: assembled slot (hidden initially)
+  const r2 = svg.append("rect").attr("x",RX+4).attr("y",s.y).attr("width",RW-8).attr("height",s.h)
+    .attr("rx",3).attr("fill",d3.color(s.color).copy({opacity:.1})).attr("stroke",s.color).attr("stroke-width",1.5).attr("opacity",0);
+  texts[s.id] = r2;
+
+  // Arrow (hidden)
+  svg.append("line").attr("class",`arrow-${s.id}`).attr("x1",LEFT+W).attr("y1",s.y+s.h/2).attr("x2",RX).attr("y2",s.y+s.h/2)
+    .attr("stroke","#21262d").attr("stroke-width",1).attr("stroke-dasharray","3,3").attr("opacity",0);
+
+  // Click handler
+  g.on("click", () => {
+    info.html(`<h3>${s.label}</h3><p class="hl">${s.desc}</p><p>Tokens: <strong>${s.tokens.toLocaleString()}</strong></p><p>Cache: <code>${s.cache}</code> | Function: <code>${s.fn}</code></p><p>${s.cache!=="none"?"缓存命中时成本降低 90%":"每轮重新计算，无法缓存"}</p>`);
+  });
+});
+
+// Animation
+let step=-1, playing=false, speed=800, timer=null;
+let cachedTok=0, uncachedTok=0;
+
+function animateSection(idx) {
+  if(idx>=sections.length){playing=false;
+    const ratio = cachedTok/(cachedTok+uncachedTok)*100;
+    info.html(`<h3>组装完成</h3><p class="hl">7 个 section 按顺序拼接为最终系统提示词</p><p>缓存率: <strong style="color:#3fb950">${ratio.toFixed(0)}%</strong> — 静态内容占大头</p><p>关键设计：静态段落在前（前缀匹配友好），动态段落在后（不破坏缓存前缀）</p><p><code>DANGEROUS_uncachedSystemPromptSection</code> 的 API 摩擦确保开发者不会无意中破坏缓存</p>`);
+    return;}
+  step=idx;
+  const s=sections[idx];
+
+  // Highlight source
+  rects[s.id].transition().duration(300).attr("stroke",s.color).attr("stroke-width",2).attr("fill",d3.color(s.color).copy({opacity:.05}));
+
+  // Show arrow
+  svg.select(`.arrow-${s.id}`).transition().duration(200).attr("opacity",1).attr("stroke",s.color);
+
+  // Show assembled
+  setTimeout(()=>{
+    texts[s.id].transition().duration(400).attr("opacity",1);
+    // Assembled label
+    svg.append("text").attr("x",RX+RW/2).attr("y",s.y+s.h/2+4).attr("text-anchor","middle")
+      .attr("fill",s.color).attr("font-size",10).attr("font-weight",500).attr("opacity",0)
+      .text(s.label).transition().duration(300).attr("opacity",1);
+
+    if(s.cache!=="none") cachedTok+=s.tokens; else uncachedTok+=s.tokens;
+    d3.select("#s-cached").text((cachedTok/1000).toFixed(1)+"K");
+    d3.select("#s-uncached").text((uncachedTok/1000).toFixed(1)+"K");
+    d3.select("#s-ratio").text(((cachedTok/(cachedTok+uncachedTok))*100).toFixed(0)+"%");
+
+    info.html(`<h3>${s.label}</h3><p class="hl">${s.desc}</p><p>+${(s.tokens/1000).toFixed(1)}K tokens → Cache: <code>${s.cache}</code></p><p>Function: <code>${s.fn}</code></p>`);
+  }, speed*0.4);
+}
+
+function play(){playing=true;d3.select("#btn-play").classed("active",true);d3.select("#btn-pause").classed("active",false);advance();}
+function advance(){if(!playing)return;if(step>=sections.length-1){animateSection(sections.length);return;}animateSection(step+1);timer=setTimeout(advance,speed);}
+function pause(){playing=false;clearTimeout(timer);d3.select("#btn-play").classed("active",false);d3.select("#btn-pause").classed("active",true);}
+function reset(){pause();step=-1;cachedTok=0;uncachedTok=0;
+  Object.values(rects).forEach(r=>r.attr("stroke","#21262d").attr("stroke-width",1).attr("fill","#0d1117"));
+  Object.values(texts).forEach(r=>r.attr("opacity",0));
+  svg.selectAll("[class^=arrow]").attr("opacity",0);
+  d3.select("#s-cached").text("0");d3.select("#s-uncached").text("0");d3.select("#s-ratio").text("0%");
+  info.html(`<h3>系统提示词架构</h3><p>点击 Play 观看 7 个 section 的组装过程。</p>`);}
+
+d3.select("#btn-play").on("click",play);
+d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",reset);
+d3.select("#btn-step").on("click",()=>{pause();if(step<sections.length)animateSection(step+1);});
+setTimeout(play,600);
+</script>
+</body>
+</html>

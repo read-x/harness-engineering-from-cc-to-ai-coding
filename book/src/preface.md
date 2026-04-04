@@ -17,6 +17,10 @@
 - 仓库地址：<https://github.com/ZhangHanDong/harness-engineering-from-cc-to-ai-coding>
 - 在线阅读：<https://zhanghandong.github.io/harness-engineering-from-cc-to-ai-coding/>
 
+如果你想一边读书、一边更直观地理解 Claude Code 的内部机制，那么配合这个可视化网站一起看会更佳：
+
+- 可视化机制站点：<https://ccunpacked.dev>
+
 为了尽可能保证 AI 写作质量，这本书的提取过程并不是“把源码丢给模型直接生成”那么简单，而是按一条比较严格的工程流程推进的：
 
 1. 先根据源码把 `DESIGN.md` 聊清楚，也就是先把整本书的大纲和设计定下来。

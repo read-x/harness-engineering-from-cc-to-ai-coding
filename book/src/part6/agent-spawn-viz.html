@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 派生 — 进程树可视化</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.layout{display:grid;grid-template-columns:1fr 280px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+svg{width:100%;background:#161b22;border-radius:8px;border:1px solid #30363d}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Agent 派生 — 进程树</h1>
+  <div class="subtitle">观察主 Agent 如何派生子 Agent，上下文如何传递和隔离</div>
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+  </div>
+  <div class="layout">
+    <svg id="viz" viewBox="0 0 720 420"></svg>
+    <div class="info" id="info">
+      <h3>Agent 派生</h3>
+      <p>Claude Code 的 <code>AgentTool</code> 允许主 Agent 派生子 Agent 处理子任务。</p>
+      <p>子 Agent 有<span class="hl">独立的上下文</span>但<span class="hl">共享工作目录</span>。</p>
+    </div>
+  </div>
+</div>
+<script>
+const svg=d3.select("#viz"),info=d3.select("#info");
+
+const steps=[
+  { nodes:[{id:"main",x:360,y:40,label:"Main Agent",color:"#58a6ff",r:30}],edges:[],
+    info:`<h3>主 Agent</h3><p class="hl">用户请求："重构这个项目的所有模块"</p><p>主 Agent 分析后决定将任务拆分为 3 个子任务并行执行。</p><p><code>forkSubagent()</code> 创建子进程</p>` },
+  { nodes:[
+    {id:"main",x:360,y:40,label:"Main Agent",color:"#58a6ff",r:30},
+    {id:"sub1",x:160,y:160,label:"Sub Agent 1\nRefactor API",color:"#bc8cff",r:26},
+  ], edges:[{from:"main",to:"sub1",label:"fork: API module"}],
+    info:`<h3>派生子 Agent 1</h3><p class="hl">任务：重构 API 模块</p><p>子 Agent 继承：系统提示词（精简版）+ 工具列表 + CWD</p><p>子 Agent 隔离：消息历史（空）、Token 预算（独立）</p><p><code>runAgent({ systemPrompt: agentSystemPrompt })</code></p>` },
+  { nodes:[
+    {id:"main",x:360,y:40,label:"Main Agent",color:"#58a6ff",r:30},
+    {id:"sub1",x:160,y:160,label:"Sub Agent 1\nRefactor API",color:"#bc8cff",r:26},
+    {id:"sub2",x:360,y:160,label:"Sub Agent 2\nRefactor DB",color:"#d29922",r:26},
+  ], edges:[{from:"main",to:"sub1",label:"fork"},{from:"main",to:"sub2",label:"fork: DB module"}],
+    info:`<h3>派生子 Agent 2</h3><p class="hl">任务：重构数据库模块</p><p>并行执行——子 Agent 1 和 2 同时工作。</p><p>关键约束：<code>isConcurrencySafe</code> 控制哪些工具可以并行</p>` },
+  { nodes:[
+    {id:"main",x:360,y:40,label:"Main Agent",color:"#58a6ff",r:30},
+    {id:"sub1",x:160,y:160,label:"Sub Agent 1\nRefactor API",color:"#bc8cff",r:26},
+    {id:"sub2",x:360,y:160,label:"Sub Agent 2\nRefactor DB",color:"#d29922",r:26},
+    {id:"sub3",x:560,y:160,label:"Sub Agent 3\nUpdate Tests",color:"#3fb950",r:26},
+  ], edges:[{from:"main",to:"sub1",label:"fork"},{from:"main",to:"sub2",label:"fork"},{from:"main",to:"sub3",label:"fork: Tests"}],
+    info:`<h3>派生子 Agent 3</h3><p class="hl">任务：更新测试用例</p><p>3 个子 Agent 并行工作，各自有独立的 Agent Loop。</p><p>主 Agent 等待所有子 Agent 完成。</p>` },
+  { nodes:[
+    {id:"main",x:360,y:40,label:"Main Agent",color:"#58a6ff",r:30},
+    {id:"sub1",x:160,y:160,label:"Sub Agent 1\n(working...)",color:"#bc8cff",r:26},
+    {id:"sub2",x:360,y:160,label:"Sub Agent 2\n(working...)",color:"#d29922",r:26},
+    {id:"sub3",x:560,y:160,label:"Sub Agent 3\n(working...)",color:"#3fb950",r:26},
+    {id:"sub1a",x:100,y:290,label:"Read\napi.ts",color:"#8b949e",r:18},
+    {id:"sub1b",x:220,y:290,label:"Edit\napi.ts",color:"#8b949e",r:18},
+    {id:"sub2a",x:320,y:290,label:"Read\ndb.ts",color:"#8b949e",r:18},
+    {id:"sub3a",x:520,y:290,label:"Read\ntest.ts",color:"#8b949e",r:18},
+    {id:"sub3b",x:620,y:290,label:"Edit\ntest.ts",color:"#8b949e",r:18},
+  ], edges:[{from:"main",to:"sub1"},{from:"main",to:"sub2"},{from:"main",to:"sub3"},
+    {from:"sub1",to:"sub1a",label:"tool"},{from:"sub1",to:"sub1b",label:"tool"},
+    {from:"sub2",to:"sub2a",label:"tool"},{from:"sub3",to:"sub3a",label:"tool"},{from:"sub3",to:"sub3b",label:"tool"}],
+    info:`<h3>子 Agent 工具调用</h3><p class="hl">每个子 Agent 有自己的 Agent Loop，独立调用工具</p><p>Sub1: Read api.ts → Edit api.ts</p><p>Sub2: Read db.ts → 分析中...</p><p>Sub3: Read test.ts → Edit test.ts</p><p>工具权限继承自主 Agent 的 <code>toolUseContext</code></p>` },
+  { nodes:[
+    {id:"main",x:360,y:40,label:"Main Agent\n(collecting)",color:"#58a6ff",r:30},
+    {id:"sub1",x:160,y:160,label:"Sub Agent 1\nDone ✓",color:"#3fb950",r:26},
+    {id:"sub2",x:360,y:160,label:"Sub Agent 2\nDone ✓",color:"#3fb950",r:26},
+    {id:"sub3",x:560,y:160,label:"Sub Agent 3\nDone ✓",color:"#3fb950",r:26},
+  ], edges:[{from:"sub1",to:"main",label:"result",color:"#3fb950",rev:true},
+    {from:"sub2",to:"main",label:"result",color:"#3fb950",rev:true},
+    {from:"sub3",to:"main",label:"result",color:"#3fb950",rev:true}],
+    info:`<h3>结果收集</h3><p class="hl">3 个子 Agent 全部完成，结果返回主 Agent</p><p>主 Agent 收到每个子 Agent 的输出摘要（不是完整对话历史——上下文隔离）。</p><p>主 Agent 汇总后向用户报告：3 个模块重构完成。</p>` },
+];
+
+let step=-1,playing=false,speed=1200,timer=null;
+
+function render(idx){
+  if(idx>=steps.length){playing=false;return;}
+  step=idx;
+  const s=steps[idx];
+  svg.selectAll("*").remove();
+  // Arrow marker
+  svg.append("defs").append("marker").attr("id","ah").attr("viewBox","0 0 10 10")
+    .attr("refX",9).attr("refY",5).attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+    .append("path").attr("d","M0 0L10 5L0 10z").attr("fill","#484f58");
+
+  s.edges.forEach(e=>{
+    const n1=s.nodes.find(n=>n.id===e.from),n2=s.nodes.find(n=>n.id===e.to);
+    const c=e.color||"#30363d";
+    svg.append("line").attr("x1",n1.x).attr("y1",n1.y+n1.r).attr("x2",n2.x).attr("y2",n2.y-n2.r)
+      .attr("stroke",c).attr("stroke-width",1.2).attr("marker-end","url(#ah)").attr("opacity",0)
+      .transition().duration(400).attr("opacity",1);
+    if(e.label){
+      const mx=(n1.x+n2.x)/2+10,my=(n1.y+n1.r+n2.y-n2.r)/2;
+      svg.append("text").attr("x",mx).attr("y",my).attr("fill",c==="#30363d"?"#484f58":c).attr("font-size",9).text(e.label);
+    }
+  });
+  s.nodes.forEach(n=>{
+    const g=svg.append("g").style("cursor","pointer");
+    g.append("circle").attr("cx",n.x).attr("cy",n.y).attr("r",0).attr("fill","#0d1117").attr("stroke",n.color).attr("stroke-width",2)
+      .transition().duration(400).attr("r",n.r);
+    const lines=n.label.split("\n");
+    lines.forEach((l,i)=>{
+      g.append("text").attr("x",n.x).attr("y",n.y-4+(i*13)).attr("text-anchor","middle").attr("fill",n.color).attr("font-size",n.r>24?10:8).attr("font-weight",500).text(l)
+        .attr("opacity",0).transition().delay(200).duration(300).attr("opacity",1);
+    });
+    // Pulse on new nodes
+    svg.append("circle").attr("cx",n.x).attr("cy",n.y).attr("r",n.r).attr("fill","none").attr("stroke",n.color).attr("stroke-width",2).attr("opacity",.5)
+      .transition().duration(600).attr("r",n.r+12).attr("opacity",0).remove();
+  });
+  info.html(s.info);
+}
+
+function play(){playing=true;d3.select("#btn-play").classed("active",true);d3.select("#btn-pause").classed("active",false);advance();}
+function advance(){if(!playing)return;if(step>=steps.length-1){playing=false;return;}render(step+1);timer=setTimeout(advance,speed);}
+function pause(){playing=false;clearTimeout(timer);d3.select("#btn-play").classed("active",false);d3.select("#btn-pause").classed("active",true);}
+function reset(){pause();step=-1;svg.selectAll("*").remove();info.html(`<h3>Agent 派生</h3><p>点击 Play 观看主 Agent 如何派生子 Agent。</p>`);}
+
+d3.select("#btn-play").on("click",play);d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",reset);d3.select("#btn-step").on("click",()=>{pause();if(step<steps.length-1)render(step+1);});
+setTimeout(play,600);
+</script>
+</body>
+</html>

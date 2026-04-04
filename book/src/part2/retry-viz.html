@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API 通信 — 重试与降级时序图</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.scenario-btn.active{background:#21262d;border-color:#d29922;color:#d29922}
+.layout{display:grid;grid-template-columns:1fr 280px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+svg{width:100%;background:#161b22;border-radius:8px;border:1px solid #30363d}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat{background:#0d1117;border-radius:6px;padding:8px;text-align:center}
+.stat .val{font-size:1.2em;font-weight:700}
+.stat .label{font-size:10px;color:#8b949e}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>API 通信 — 重试与降级</h1>
+  <div class="subtitle">观察 429/529 错误如何触发指数退避重试、模型降级和 fast mode 冷却</div>
+  <div class="controls">
+    <span style="font-size:12px;color:#8b949e">Scenario:</span>
+    <button class="btn scenario-btn active" data-sc="normal">Normal (200)</button>
+    <button class="btn scenario-btn" data-sc="rate-limit">Rate Limit (429)</button>
+    <button class="btn scenario-btn" data-sc="overload">Overload (529)</button>
+    <button class="btn scenario-btn" data-sc="fast-degrade">Fast Mode Degrade</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-attempts" style="color:#58a6ff">0</div><div class="label">Attempts</div></div>
+    <div class="stat"><div class="val" id="s-delay" style="color:#d29922">0s</div><div class="label">Total Delay</div></div>
+    <div class="stat"><div class="val" id="s-status" style="color:#3fb950">-</div><div class="label">Final Status</div></div>
+  </div>
+  <div class="layout">
+    <svg id="viz" viewBox="0 0 720 380"></svg>
+    <div class="info" id="info">
+      <h3>withRetry()</h3>
+      <p>Claude Code 的 API 通信层有 <span class="hl">3 层防护</span>：</p>
+      <p>1. 指数退避重试（最多 10 次）</p>
+      <p>2. 529 特殊限制（最多 3 次）</p>
+      <p>3. Fast mode → 标准模式降级</p>
+      <p><code>DEFAULT_MAX_RETRIES = 10</code></p>
+      <p><code>MAX_529_RETRIES = 3</code></p>
+      <p><code>BASE_DELAY_MS = 500</code></p>
+    </div>
+  </div>
+</div>
+<script>
+const svg=d3.select("#viz"),info=d3.select("#info");
+
+// Timeline actors
+const CX=120, SX=400, AX=600;
+const actors=[
+  {x:CX,label:"Client (CC)"},{x:SX,label:"API Server"},{x:AX,label:"Fast Mode"}
+];
+
+// Draw actor lines
+actors.forEach(a=>{
+  svg.append("line").attr("x1",a.x).attr("y1",40).attr("x2",a.x).attr("y2",370).attr("stroke","#21262d").attr("stroke-width",1).attr("stroke-dasharray","4,4");
+  svg.append("text").attr("x",a.x).attr("y",25).attr("text-anchor","middle").attr("fill","#8b949e").attr("font-size",11).attr("font-weight",600).text(a.label);
+});
+
+const scenarios={
+  "normal":[
+    {y:60,from:CX,to:SX,label:"POST /messages",color:"#58a6ff",info:`<h3>正常请求</h3><p class="hl">首次 API 调用 → 200 OK</p><p>无需重试，直接返回。</p>`},
+    {y:100,from:SX,to:CX,label:"200 OK + streaming",color:"#3fb950",info:`<h3>成功响应</h3><p class="hl">流式响应开始。整个过程 < 1 秒。</p><p>这是最常见的路径——大部分请求不需要重试。</p>`,final:true,status:"200 OK",attempts:1,delay:"0s"},
+  ],
+  "rate-limit":[
+    {y:60,from:CX,to:SX,label:"POST /messages",color:"#58a6ff",info:`<h3>请求 #1</h3><p>发送 API 请求...</p>`},
+    {y:90,from:SX,to:CX,label:"429 Too Many Requests",color:"#f47067",info:`<h3>429 限流</h3><p class="hl">服务端返回 429 — 请求太频繁</p><p>检查 <code>Retry-After</code> header。如果有，使用它作为延迟。</p>`},
+    {y:120,self:CX,label:"sleep 500ms (exponential backoff)",color:"#d29922",info:`<h3>退避等待</h3><p>延迟 = <code>BASE_DELAY_MS * 2^0</code> = 500ms</p><p>如果 Retry-After header 存在，使用 header 值代替。</p>`},
+    {y:155,from:CX,to:SX,label:"POST /messages (retry 1)",color:"#58a6ff",info:`<h3>重试 #1</h3><p>第二次尝试...</p>`},
+    {y:185,from:SX,to:CX,label:"429 Too Many Requests",color:"#f47067",info:`<h3>再次 429</h3><p>仍然被限流。继续退避。</p>`},
+    {y:215,self:CX,label:"sleep 1000ms (2^1 × 500)",color:"#d29922",info:`<h3>加倍退避</h3><p>延迟 = <code>500 * 2^1</code> = 1000ms</p><p>指数退避：每次失败延迟翻倍，上限 5 分钟。</p>`},
+    {y:250,from:CX,to:SX,label:"POST /messages (retry 2)",color:"#58a6ff",info:`<h3>重试 #2</h3><p>第三次尝试...</p>`},
+    {y:290,from:SX,to:CX,label:"200 OK",color:"#3fb950",info:`<h3>成功！</h3><p class="hl">第 3 次尝试成功。总延迟 1.5 秒。</p><p>大多数 429 在 2-3 次重试后恢复。</p>`,final:true,status:"200 (3rd try)",attempts:3,delay:"1.5s"},
+  ],
+  "overload":[
+    {y:60,from:CX,to:SX,label:"POST /messages",color:"#58a6ff",info:`<h3>请求 #1</h3>`},
+    {y:90,from:SX,to:CX,label:"529 Overloaded",color:"#f47067",info:`<h3>529 过载</h3><p class="hl">529 比 429 更严重——服务端真的过载了。</p><p>529 有独立的重试上限：<code>MAX_529_RETRIES = 3</code>（比默认的 10 次少得多）</p><p>因为 529 时每次重试都是对过载服务的额外压力。</p>`},
+    {y:125,self:CX,label:"sleep 500ms",color:"#d29922",info:`<h3>529 退避</h3><p>首次退避 500ms</p>`},
+    {y:155,from:CX,to:SX,label:"retry 1",color:"#58a6ff"},
+    {y:180,from:SX,to:CX,label:"529 Overloaded",color:"#f47067"},
+    {y:205,self:CX,label:"sleep 1000ms",color:"#d29922"},
+    {y:235,from:CX,to:SX,label:"retry 2",color:"#58a6ff"},
+    {y:260,from:SX,to:CX,label:"529 Overloaded",color:"#f47067"},
+    {y:290,self:CX,label:"sleep 2000ms",color:"#d29922"},
+    {y:320,from:CX,to:SX,label:"retry 3 (MAX_529)",color:"#58a6ff",info:`<h3>最后一次 529 重试</h3><p class="hl">已达 MAX_529_RETRIES = 3</p><p>如果这次还是 529，不再重试。</p>`},
+    {y:350,from:SX,to:CX,label:"529 → GIVE UP",color:"#f47067",info:`<h3>放弃</h3><p class="hl">3 次 529 重试全部失败。</p><p>返回错误给用户：<code>REPEATED_529_ERROR_MESSAGE</code></p><p>这是有意的——过载时继续重试会加剧问题（amplification factor 3-10x）</p>`,final:true,status:"FAILED (529×3)",attempts:4,delay:"3.5s"},
+  ],
+  "fast-degrade":[
+    {y:60,from:CX,to:AX,label:"Fast Mode enabled",color:"#bc8cff",info:`<h3>Fast Mode</h3><p class="hl">用户启用了 Fast Mode（更快但有容量限制）</p>`},
+    {y:90,from:CX,to:SX,label:"POST /messages (fast)",color:"#58a6ff"},
+    {y:120,from:SX,to:CX,label:"429 (fast mode quota)",color:"#f47067",info:`<h3>Fast Mode 限流</h3><p class="hl">Fast mode 配额用完。</p><p>触发 <code>handleFastModeOverageRejection()</code></p>`},
+    {y:155,from:CX,to:AX,label:"triggerFastModeCooldown()",color:"#d29922",info:`<h3>Fast Mode 降级</h3><p class="hl">Fast mode 进入冷却期。切换到标准模式。</p><p>这不是错误——是<strong>优雅降级</strong>。用户仍然能继续工作，只是速度变慢。</p>`},
+    {y:195,self:AX,label:"cooldown active",color:"#d29922"},
+    {y:225,from:CX,to:SX,label:"POST /messages (standard)",color:"#58a6ff",info:`<h3>标准模式重试</h3><p>用标准模式重新发送请求...</p>`},
+    {y:265,from:SX,to:CX,label:"200 OK (standard speed)",color:"#3fb950",info:`<h3>成功（标准速度）</h3><p class="hl">标准模式请求成功。</p><p>用户体验：响应变慢，但不中断。</p><p>Fast mode 冷却结束后自动恢复。</p>`,final:true,status:"200 (degraded)",attempts:2,delay:"~2s"},
+  ],
+};
+
+let currentSc="normal",step=-1,playing=false,speed=700,timer=null;
+const drawnEls=[];
+
+function drawStep(idx){
+  const sc=scenarios[currentSc];
+  if(idx>=sc.length){playing=false;return;}
+  step=idx;
+  const s=sc[idx];
+  const g=svg.append("g").attr("opacity",0);
+  drawnEls.push(g);
+
+  if(s.self){
+    // Self-arrow (delay)
+    g.append("path").attr("d",`M${s.self},${s.y} C${s.self+60},${s.y-8} ${s.self+60},${s.y+8} ${s.self},${s.y+5}`)
+      .attr("fill","none").attr("stroke",s.color).attr("stroke-width",1.5);
+    g.append("text").attr("x",s.self+65).attr("y",s.y+4).attr("fill",s.color).attr("font-size",10).text(s.label);
+  } else {
+    g.append("line").attr("x1",s.from).attr("y1",s.y).attr("x2",s.to).attr("y2",s.y)
+      .attr("stroke",s.color).attr("stroke-width",1.5).attr("marker-end","url(#ah)");
+    const mx=(s.from+s.to)/2;
+    g.append("text").attr("x",mx).attr("y",s.y-6).attr("text-anchor","middle").attr("fill",s.color).attr("font-size",10).text(s.label);
+  }
+
+  g.transition().duration(300).attr("opacity",1);
+
+  if(s.info) info.html(s.info);
+  if(s.final){
+    d3.select("#s-attempts").text(s.attempts);
+    d3.select("#s-delay").text(s.delay);
+    d3.select("#s-status").text(s.status).style("color",s.status.includes("FAIL")?"#f47067":"#3fb950");
+  }
+}
+
+// Arrow marker
+svg.append("defs").append("marker").attr("id","ah").attr("viewBox","0 0 10 10")
+  .attr("refX",9).attr("refY",5).attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+  .append("path").attr("d","M0 0L10 5L0 10z").attr("fill","#484f58");
+
+function play(){playing=true;d3.select("#btn-play").classed("active",true);advance();}
+function advance(){if(!playing)return;const sc=scenarios[currentSc];if(step>=sc.length-1){playing=false;return;}drawStep(step+1);timer=setTimeout(advance,speed);}
+function pause(){playing=false;clearTimeout(timer);}
+function reset(){pause();step=-1;drawnEls.forEach(g=>g.remove());drawnEls.length=0;
+  d3.select("#s-attempts").text("0");d3.select("#s-delay").text("0s");d3.select("#s-status").text("-").style("color","#3fb950");}
+
+d3.selectAll(".scenario-btn").on("click",function(){
+  currentSc=d3.select(this).attr("data-sc");
+  d3.selectAll(".scenario-btn").classed("active",false);d3.select(this).classed("active",true);
+  reset(); setTimeout(play,300);
+});
+
+d3.select("#btn-play").on("click",play);d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",reset);d3.select("#btn-step").on("click",()=>{pause();const sc=scenarios[currentSc];if(step<sc.length-1)drawStep(step+1);});
+setTimeout(play,600);
+</script>
+</body>
+</html>

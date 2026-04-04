@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>权限决策树 — 交互式可视化</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.scenario-btn{border-color:#484f58}
+.scenario-btn.active{background:#21262d;border-color:#d29922;color:#d29922}
+.layout{display:grid;grid-template-columns:1fr 300px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+svg{width:100%;background:#161b22;border-radius:8px;border:1px solid #30363d}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.result-box{padding:12px;border-radius:8px;margin-top:10px;font-weight:600;text-align:center;font-size:16px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>权限决策树 — 三阶段管线</h1>
+  <div class="subtitle">选择一个工具调用场景，观察它如何通过三阶段权限管线</div>
+  <div class="controls">
+    <span style="font-size:12px;color:#8b949e">Choose scenario:</span>
+    <button class="btn scenario-btn active" data-sc="read">Read file</button>
+    <button class="btn scenario-btn" data-sc="bash-git">Bash: git status</button>
+    <button class="btn scenario-btn" data-sc="bash-rm">Bash: rm -rf /</button>
+    <button class="btn scenario-btn" data-sc="edit">Edit file</button>
+    <button class="btn scenario-btn" data-sc="write-env">Write .env</button>
+  </div>
+  <div class="layout">
+    <svg id="viz" viewBox="0 0 780 520"></svg>
+    <div class="info" id="info">
+      <h3>权限系统</h3>
+      <p>Claude Code 的权限管线有三个阶段：</p>
+      <p><span class="hl">1. Deny 检查</span> — 匹配禁止规则</p>
+      <p><span class="hl">2. Allow 检查</span> — 匹配允许规则</p>
+      <p><span class="hl">3. 模式裁决</span> — default(ask) / dontAsk(deny) / auto(AI分类器)</p>
+      <p>选择左侧场景观察决策过程。</p>
+    </div>
+  </div>
+</div>
+<script>
+const svg = d3.select("#viz");
+const info = d3.select("#info");
+
+// Decision tree nodes
+const N = {
+  start:  { x:390, y:30,  w:120, h:28, label:"工具调用请求",  color:"#58a6ff" },
+  deny1:  { x:390, y:90,  w:140, h:28, label:"1a: deny 规则匹配?", color:"#f47067" },
+  deny1r: { x:640, y:90,  w:80,  h:28, label:"DENY",          color:"#f47067", terminal:true },
+  safe:   { x:390, y:150, w:140, h:28, label:"1d: isReadOnly?",color:"#3fb950" },
+  allow1: { x:390, y:210, w:140, h:28, label:"2a: 内容级 allow?",color:"#3fb950" },
+  allow1r:{ x:140, y:210, w:80,  h:28, label:"ALLOW",          color:"#3fb950", terminal:true },
+  allow2: { x:390, y:270, w:160, h:28, label:"2b: 工具级 allow 规则?", color:"#3fb950" },
+  allow2r:{ x:140, y:270, w:80,  h:28, label:"ALLOW",          color:"#3fb950", terminal:true },
+  allow3: { x:390, y:330, w:160, h:28, label:"2c: 工具自身 isAlwaysAllowed?", color:"#3fb950" },
+  allow3r:{ x:140, y:330, w:80,  h:28, label:"ALLOW",          color:"#3fb950", terminal:true },
+  mode:   { x:390, y:400, w:160, h:28, label:"3: Permission Mode?", color:"#bc8cff" },
+  ask:    { x:200, y:460, w:80,  h:28, label:"ASK user",       color:"#d29922", terminal:true },
+  deny2:  { x:400, y:460, w:80,  h:28, label:"DENY",           color:"#f47067", terminal:true },
+  auto:   { x:580, y:460, w:100, h:28, label:"AI Classifier",  color:"#bc8cff", terminal:true },
+};
+
+// Edges
+const E = [
+  { from:"start", to:"deny1" },
+  { from:"deny1", to:"deny1r", label:"match", color:"#f47067" },
+  { from:"deny1", to:"safe",   label:"no match" },
+  { from:"safe",  to:"allow1r",label:"yes (read-only)", color:"#3fb950" },
+  { from:"safe",  to:"allow1", label:"no" },
+  { from:"allow1",to:"allow1r",label:"match", color:"#3fb950" },
+  { from:"allow1",to:"allow2", label:"no match" },
+  { from:"allow2",to:"allow2r",label:"match", color:"#3fb950" },
+  { from:"allow2",to:"allow3", label:"no match" },
+  { from:"allow3",to:"allow3r",label:"yes", color:"#3fb950" },
+  { from:"allow3",to:"mode",   label:"no" },
+  { from:"mode",  to:"ask",    label:"default", color:"#d29922" },
+  { from:"mode",  to:"deny2",  label:"dontAsk", color:"#f47067" },
+  { from:"mode",  to:"auto",   label:"auto", color:"#bc8cff" },
+];
+
+// Arrow marker
+svg.append("defs").append("marker").attr("id","ah").attr("viewBox","0 0 10 10")
+  .attr("refX",9).attr("refY",5).attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+  .append("path").attr("d","M0 0L10 5L0 10z").attr("fill","#484f58");
+
+// Draw edges
+E.forEach(e => {
+  const n1=N[e.from], n2=N[e.to];
+  const c=e.color||"#30363d";
+  svg.append("line").attr("class","edge")
+    .attr("x1",n1.x).attr("y1",n1.y+n1.h/2)
+    .attr("x2",n2.x).attr("y2",n2.y-n2.h/2)
+    .attr("stroke",c).attr("stroke-width",1).attr("marker-end","url(#ah)").attr("opacity",.5);
+  if(e.label){
+    const mx=(n1.x+n2.x)/2+((n2.x<n1.x)?-30:15), my=(n1.y+n1.h/2+n2.y-n2.h/2)/2;
+    svg.append("text").attr("x",mx).attr("y",my).attr("fill",c==="#30363d"?"#484f58":c).attr("font-size",9).text(e.label);
+  }
+});
+
+// Draw nodes
+Object.entries(N).forEach(([id,n]) => {
+  const g = svg.append("g").attr("class","node").attr("data-id",id);
+  g.append("rect").attr("x",n.x-n.w/2).attr("y",n.y-n.h/2).attr("width",n.w).attr("height",n.h)
+    .attr("rx",n.terminal?14:4).attr("fill","#0d1117").attr("stroke",n.color).attr("stroke-width",1.5);
+  g.append("text").attr("x",n.x).attr("y",n.y+4).attr("text-anchor","middle")
+    .attr("fill",n.color).attr("font-size",n.terminal?12:10).attr("font-weight",n.terminal?700:500).text(n.label);
+});
+
+// Scenarios
+const scenarios = {
+  "read": {
+    name: "Read('src/main.rs')",
+    path: ["start","deny1","safe"],
+    result: "allow1r",
+    desc: `<h3>Read file → ALLOW</h3><p class="hl">Read 工具的 <code>isReadOnly()</code> 返回 true</p><p>直接在阶段 1d 通过 — 只读工具不需要任何规则匹配或用户确认。</p><p><code>isReadOnly: true, isConcurrencySafe: true</code></p><div class="result-box" style="background:rgba(63,185,80,.1);color:#3fb950">ALLOW (read-only bypass)</div>`
+  },
+  "bash-git": {
+    name: "Bash('git status')",
+    path: ["start","deny1","safe","allow1","allow2"],
+    result: "allow2r",
+    desc: `<h3>Bash: git status → ALLOW</h3><p class="hl">Bash 不是 readOnly，但 <code>allowed_tools</code> 规则包含 <code>Bash(git:*)</code></p><p>阶段 2b 匹配到工具级 allow 规则 — git 子命令被预批准。</p><p>YOLO 分类器内部也会将 <code>git status</code> 归类为安全操作。</p><div class="result-box" style="background:rgba(63,185,80,.1);color:#3fb950">ALLOW (tool-level rule)</div>`
+  },
+  "bash-rm": {
+    name: "Bash('rm -rf /')",
+    path: ["start","deny1"],
+    result: "deny1r",
+    desc: `<h3>Bash: rm -rf / → DENY</h3><p class="hl">在阶段 1a 就被拦截 — deny 规则直接匹配</p><p>Claude Code 内置了对破坏性命令的 deny 规则。<code>rm -rf</code> 是最典型的危险操作。</p><p>即使用户配置了 <code>bypassPermissions</code> 模式，某些 deny 规则仍然不可跳过。</p><div class="result-box" style="background:rgba(248,81,73,.1);color:#f47067">DENY (deny rule match)</div>`
+  },
+  "edit": {
+    name: "Edit('src/handler.rs')",
+    path: ["start","deny1","safe","allow1","allow2","allow3","mode"],
+    result: "ask",
+    desc: `<h3>Edit file → ASK user</h3><p class="hl">Edit 既不是 readOnly，也没有匹配 allow 规则</p><p>走完三个阶段全部检查后，进入模式裁决。在 <code>default</code> 模式下 → 弹窗询问用户。</p><p>如果是 <code>acceptEdits</code> 模式，Edit 会被自动批准。</p><div class="result-box" style="background:rgba(210,153,34,.1);color:#d29922">ASK (user confirmation required)</div>`
+  },
+  "write-env": {
+    name: "Write('.env')",
+    path: ["start","deny1"],
+    result: "deny1r",
+    desc: `<h3>Write .env → DENY</h3><p class="hl">写入 <code>.env</code> 文件匹配到内容级 deny 规则</p><p>Claude Code 禁止写入可能包含敏感信息的文件（.env, credentials, secrets）。</p><p>这是 <strong>内容级规则</strong> — 不是工具本身被禁，而是特定的参数组合被禁。</p><div class="result-box" style="background:rgba(248,81,73,.1);color:#f47067">DENY (content-level deny)</div>`
+  },
+};
+
+let currentPath = [];
+let animIdx = -1;
+let animTimer = null;
+
+function resetAll() {
+  clearTimeout(animTimer);
+  animIdx = -1;
+  currentPath = [];
+  svg.selectAll(".node rect").attr("stroke-width",1.5).attr("fill","#0d1117");
+  svg.selectAll(".edge").attr("opacity",.5).attr("stroke-width",1);
+}
+
+function highlightNode(id, color) {
+  svg.select(`.node[data-id="${id}"] rect`)
+    .transition().duration(300).attr("stroke-width",3).attr("fill",d3.color(color||N[id].color).copy({opacity:.15}));
+  // Pulse
+  const n = N[id];
+  svg.append("rect").attr("x",n.x-n.w/2-3).attr("y",n.y-n.h/2-3).attr("width",n.w+6).attr("height",n.h+6)
+    .attr("rx",n.terminal?17:7).attr("fill","none").attr("stroke",n.color).attr("stroke-width",2).attr("opacity",.6)
+    .transition().duration(500).attr("opacity",0).remove();
+}
+
+function runScenario(sc) {
+  resetAll();
+  const s = scenarios[sc];
+  const fullPath = [...s.path, s.result];
+  info.html(`<h3>${s.name}</h3><p>Tracing through permission pipeline...</p>`);
+
+  let i = 0;
+  function step() {
+    if (i >= fullPath.length) {
+      info.html(s.desc);
+      return;
+    }
+    highlightNode(fullPath[i]);
+    i++;
+    animTimer = setTimeout(step, 500);
+  }
+  step();
+}
+
+// Scenario buttons
+d3.selectAll(".scenario-btn").on("click", function() {
+  const sc = d3.select(this).attr("data-sc");
+  d3.selectAll(".scenario-btn").classed("active",false);
+  d3.select(this).classed("active",true);
+  runScenario(sc);
+});
+
+// Auto-run first scenario
+setTimeout(() => runScenario("read"), 600);
+</script>
+</body>
+</html>

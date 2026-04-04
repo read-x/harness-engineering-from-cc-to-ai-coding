@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Loop — 交互式状态机可视化</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:0.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}
+.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.speed-label{color:#8b949e;font-size:12px}
+.layout{display:grid;grid-template-columns:1fr 340px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+svg{width:100%;background:#161b22;border-radius:8px;border:1px solid #30363d}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6;overflow-y:auto;max-height:520px}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.info .tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;margin-right:4px;font-weight:600}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat{background:#0d1117;border-radius:6px;padding:8px 10px;text-align:center}
+.stat .val{font-size:1.3em;font-weight:700;color:#58a6ff}
+.stat .label{font-size:10px;color:#8b949e}
+.legend{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:#8b949e}
+.legend-dot{width:10px;height:10px;border-radius:50%}
+.tooltip{position:absolute;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:8px 12px;font-size:12px;pointer-events:none;opacity:0;transition:opacity .15s;box-shadow:0 4px 12px rgba(0,0,0,.4);z-index:100;max-width:300px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Agent Loop — queryLoop() 状态机</h1>
+  <div class="subtitle">Claude Code 的核心循环：8 个阶段 × 7 种继续转换 × 10 种终止原因</div>
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+    <span class="speed-label">Speed:</span>
+    <button class="btn speed" data-speed="2000">Slow</button>
+    <button class="btn speed active" data-speed="900">Normal</button>
+    <button class="btn speed" data-speed="350">Fast</button>
+    <span style="margin-left:auto;font-size:11px;color:#8b949e" id="step-counter">Step 0/0</span>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div>Context</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#bc8cff"></div>API Call</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div>Tool Exec</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div>Continue</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f47067"></div>Terminal</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#39d353"></div>Recovery</div>
+  </div>
+  <div class="layout">
+    <svg id="viz" viewBox="0 0 740 510"></svg>
+    <div>
+      <div class="stats">
+        <div class="stat"><div class="val" id="s-turn">0</div><div class="label">Turn</div></div>
+        <div class="stat"><div class="val" id="s-tokens">0</div><div class="label">Tokens</div></div>
+        <div class="stat"><div class="val" id="s-tools">0</div><div class="label">Tool Calls</div></div>
+      </div>
+      <div class="info" id="info">
+        <h3>queryLoop() 状态机</h3>
+        <p>Claude Code 的 Agent Loop 不是简单的 REPL——它是一个拥有 <span class="hl">10 个状态字段</span>、<span class="hl">7 种继续转换</span>和 <span class="hl">10 种终止原因</span>的自修改状态机。</p>
+        <p>点击 <strong>Play</strong> 观看一次完整的"帮我修 bug"对话如何在状态机中流转。</p>
+        <p><code>restored-src/src/query.ts:241</code></p>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const svg = d3.select("#viz");
+const info = d3.select("#info");
+const tip = d3.select("#tooltip");
+
+// Nodes
+const nodes = [
+  { id:"entry",  x:370, y:30,  r:28, label:"Entry",        color:"#8b949e", phase:"queryLoop() 入口" },
+  { id:"ctx",    x:370, y:105, r:30, label:"1. Context",    color:"#58a6ff", phase:"上下文预处理" },
+  { id:"limit",  x:160, y:105, r:22, label:"Limit?",       color:"#f47067", phase:"Blocking limit 检查" },
+  { id:"api",    x:370, y:195, r:30, label:"2. API Call",   color:"#bc8cff", phase:"模型调用 + 流式响应" },
+  { id:"abort",  x:580, y:195, r:22, label:"Abort?",       color:"#f47067", phase:"中断检查" },
+  { id:"branch", x:370, y:285, r:26, label:"tool_use?",    color:"#d29922", phase:"是否有工具调用" },
+  { id:"tools",  x:550, y:360, r:30, label:"3. Tools",     color:"#d29922", phase:"工具执行 + 权限检查" },
+  { id:"recov",  x:160, y:285, r:26, label:"4. Recovery",  color:"#39d353", phase:"恢复与降级" },
+  { id:"inject", x:550, y:445, r:26, label:"5. Inject",    color:"#58a6ff", phase:"附件注入(memory/skill)" },
+  { id:"next",   x:370, y:445, r:26, label:"next_turn",    color:"#3fb950", phase:"继续下一轮" },
+  { id:"done",   x:160, y:380, r:24, label:"Done",         color:"#f47067", phase:"终止" },
+];
+
+// Edges
+const edges = [
+  { from:"entry", to:"ctx",    label:"init State" },
+  { from:"ctx",   to:"limit",  label:"check tokens", dash:true },
+  { from:"ctx",   to:"api",    label:"within budget" },
+  { from:"limit", to:"done",   label:"blocking_limit", color:"#f47067" },
+  { from:"api",   to:"abort",  label:"streaming...", dash:true },
+  { from:"api",   to:"branch", label:"response ready" },
+  { from:"abort", to:"done",   label:"aborted", color:"#f47067" },
+  { from:"branch",to:"tools",  label:"has tool_use", color:"#d29922" },
+  { from:"branch",to:"recov",  label:"no tool_use" },
+  { from:"tools", to:"inject", label:"results" },
+  { from:"inject",to:"next",   label:"maxTurns?" },
+  { from:"next",  to:"ctx",    label:"continue", color:"#3fb950", curve:true },
+  { from:"recov", to:"ctx",    label:"retry", color:"#39d353", curve:true },
+  { from:"recov", to:"done",   label:"exhausted", color:"#f47067" },
+  { from:"inject",to:"done",   label:"max_turns", color:"#f47067", dash:true },
+];
+
+// Draw edges
+const edgeG = svg.append("g");
+edges.forEach(e => {
+  const n1 = nodes.find(n=>n.id===e.from), n2 = nodes.find(n=>n.id===e.to);
+  const c = e.color || "#30363d";
+  if (e.curve) {
+    const dx = e.from==="next" ? -100 : 80;
+    edgeG.append("path")
+      .attr("d", `M${n1.x},${n1.y} C${n1.x+dx},${n1.y} ${n2.x+dx},${n2.y} ${n2.x},${n2.y+n2.r}`)
+      .attr("fill","none").attr("stroke",c).attr("stroke-width",1.2)
+      .attr("stroke-dasharray", e.dash?"4,3":"none")
+      .attr("marker-end",`url(#ah)`);
+  } else {
+    edgeG.append("line")
+      .attr("x1",n1.x).attr("y1",n1.y+n1.r).attr("x2",n2.x).attr("y2",n2.y-n2.r)
+      .attr("stroke",c).attr("stroke-width",1.2)
+      .attr("stroke-dasharray", e.dash?"4,3":"none")
+      .attr("marker-end",`url(#ah)`);
+  }
+  // Edge label
+  const mx=(n1.x+n2.x)/2, my=(n1.y+n1.r+n2.y-n2.r)/2;
+  if(e.label) {
+    edgeG.append("text").attr("x",mx+(e.curve?((e.from==="next")?-50:40):10)).attr("y",my)
+      .attr("fill",c=="#30363d"?"#484f58":c).attr("font-size",9).text(e.label);
+  }
+});
+
+// Arrow marker
+svg.append("defs").append("marker").attr("id","ah")
+  .attr("viewBox","0 0 10 10").attr("refX",9).attr("refY",5)
+  .attr("markerWidth",5).attr("markerHeight",5).attr("orient","auto")
+  .append("path").attr("d","M0 0L10 5L0 10z").attr("fill","#484f58");
+
+// Draw nodes
+const nodeG = svg.append("g");
+nodes.forEach(n => {
+  const g = nodeG.append("g").attr("class","node").attr("data-id",n.id).style("cursor","pointer");
+  g.append("circle").attr("cx",n.x).attr("cy",n.y).attr("r",n.r)
+    .attr("fill","#0d1117").attr("stroke",n.color).attr("stroke-width",2);
+  g.append("text").attr("x",n.x).attr("y",n.y+4).attr("text-anchor","middle")
+    .attr("fill",n.color).attr("font-size", n.r>25?11:9).attr("font-weight",600).text(n.label);
+});
+
+// Simulation steps
+const SIM = [
+  { node:"entry", turn:0, tokens:0, tools:0,
+    info:`<h3>Entry: queryLoop()</h3><p class="hl">用户输入："帮我修复 src/parser.rs 的 null pointer bug"</p><p>初始化 State 对象：messages=[], turnCount=0, autoCompactTracking=undefined</p><p><code>restored-src/src/query.ts:241</code></p>` },
+  { node:"ctx", turn:0, tokens:1200, tools:0,
+    info:`<h3>阶段 1: 上下文预处理</h3><p class="hl">四级压缩管线依次执行：</p><p>1. <code>applyToolResultBudget</code> — 裁剪过大的工具结果</p><p>2. <code>snipCompact</code> — 标记可压缩的旧消息</p><p>3. <code>microcompact</code> — 精准修剪冗余内容</p><p>4. <code>autocompact</code> — 如果接近上限，触发 LLM 压缩摘要</p><p>当前 tokens: <strong>1,200</strong> (远低于 200K 上限)</p>` },
+  { node:"api", turn:1, tokens:4500, tools:0,
+    info:`<h3>阶段 2-3: API 调用</h3><p class="hl">调用 Anthropic API，流式接收响应</p><p><code>callModel()</code> + <code>attemptWithFallback()</code></p><p>模型分析 bug 后决定先读取文件：</p><p><span class="tag" style="background:#d2992233;color:#d29922">tool_use</span> <code>Read { path: "src/parser.rs" }</code></p><p>+3,300 tokens (系统提示词 + 用户输入 + 模型响应)</p>` },
+  { node:"branch", turn:1, tokens:4500, tools:0,
+    info:`<h3>阶段 4: 分支判定</h3><p class="hl">模型响应包含 <code>tool_use</code> block → <strong>需要工具执行</strong></p><p>进入工具执行管线（阶段 6）</p>` },
+  { node:"tools", turn:1, tokens:4500, tools:1,
+    info:`<h3>阶段 6: 工具执行</h3><p class="hl">执行 <code>Read("src/parser.rs")</code></p><p>权限检查：Read 是只读工具 → 自动允许</p><p>并发安全：<code>isConcurrencySafe: true</code></p><p>结果：返回文件内容（2,100 tokens）</p><p>如果结果超过 50K 字符，会被持久化到磁盘并替换为预览</p>` },
+  { node:"inject", turn:1, tokens:6600, tools:1,
+    info:`<h3>阶段 7: 附件注入</h3><p class="hl">在工具结果后注入额外上下文：</p><p>• memory prefetch — 如果启用了跨会话记忆</p><p>• skill discovery — 如果匹配到可用技能</p><p>• commands — 如果有待处理的用户命令</p><p>本轮无附件注入，直接进入继续判定</p>` },
+  { node:"next", turn:1, tokens:6600, tools:1,
+    info:`<h3>Continue: next_turn</h3><p class="hl">turnCount: 0 → 1（未达 maxTurns 上限）</p><p>构造新的 State 对象：</p><p><code>state = { messages: [...prev, assistant, tool_result], turnCount: 1, transition: "next_turn", ... }</code></p><p><span class="tag" style="background:#3fb95033;color:#3fb950">continue</span> 回到循环顶部</p>` },
+  { node:"ctx", turn:1, tokens:6600, tools:1,
+    info:`<h3>第 2 轮: 上下文预处理</h3><p class="hl">消息数组现在包含：用户输入 + 模型分析 + Read 结果</p><p>总 tokens 6,600 — 仍然安全，不触发压缩</p>` },
+  { node:"api", turn:2, tokens:9800, tools:1,
+    info:`<h3>第 2 轮: API 调用</h3><p class="hl">模型看到了 parser.rs 的内容，定位到 bug：</p><p>"第 42 行的 <code>.unwrap()</code> 在输入为 None 时 panic"</p><p>决定修复：</p><p><span class="tag" style="background:#d2992233;color:#d29922">tool_use</span> <code>Edit { file: "src/parser.rs", old: ".unwrap()", new: ".ok_or(ParseError::NullInput)?" }</code></p>` },
+  { node:"branch", turn:2, tokens:9800, tools:1,
+    info:`<h3>分支: 有 tool_use → 执行编辑</h3>` },
+  { node:"tools", turn:2, tokens:9800, tools:2,
+    info:`<h3>工具执行: Edit</h3><p class="hl">执行 <code>Edit("src/parser.rs")</code></p><p>权限检查：Edit 需要用户确认 → <span class="tag" style="background:#d2992233;color:#d29922">ask</span></p><p>用户批准后执行编辑</p><p>Edit 工具强制执行 "Read Before Edit"：验证文件已在上一轮被读取 ✓</p>` },
+  { node:"inject", turn:2, tokens:10200, tools:2,
+    info:`<h3>附件注入（第 2 轮）</h3><p class="hl">无额外附件。turnCount 检查通过。</p>` },
+  { node:"next", turn:2, tokens:10200, tools:2,
+    info:`<h3>Continue: next_turn</h3><p class="hl">turnCount: 1 → 2</p><p>继续下一轮，让模型验证修复效果</p>` },
+  { node:"ctx", turn:2, tokens:10200, tools:2,
+    info:`<h3>第 3 轮: 上下文预处理</h3><p class="hl">消息数组：用户输入 + 分析 + Read + 编辑 + 编辑结果</p><p>10,200 tokens — 正常范围</p>` },
+  { node:"api", turn:3, tokens:12500, tools:2,
+    info:`<h3>第 3 轮: API 调用</h3><p class="hl">模型确认修复完成，生成总结：</p><p>"修复了 src/parser.rs:42 的 null pointer bug，将 .unwrap() 替换为 .ok_or() 错误处理。"</p><p>这次响应<strong>不包含 tool_use</strong>——模型认为任务完成了。</p>` },
+  { node:"branch", turn:3, tokens:12500, tools:2,
+    info:`<h3>分支: 无 tool_use → 进入恢复/终止判定</h3><p>模型没有请求更多工具调用，检查是否需要恢复或可以终止。</p>` },
+  { node:"recov", turn:3, tokens:12500, tools:2,
+    info:`<h3>阶段 5: 恢复与终止判定</h3><p class="hl">检查所有恢复条件：</p><p>• prompt-too-long? → No</p><p>• max_output_tokens truncated? → No</p><p>• stop hook blocking? → No</p><p>• token budget continuation? → No</p><p>所有恢复条件均不满足 → <strong>正常终止</strong></p>` },
+  { node:"done", turn:3, tokens:12500, tools:2,
+    info:`<h3>Terminal: completed</h3><p class="hl">queryLoop() 返回 <code>{ reason: "completed" }</code></p><p>统计：<strong>3 轮</strong>，<strong>2 次工具调用</strong>（Read + Edit），<strong>12,500 tokens</strong></p><p>整个过程：用户请求 → 读取文件 → 定位 bug → 编辑修复 → 确认完成</p><p style="margin-top:8px;color:#3fb950;font-weight:600">Agent Loop 完成</p>` },
+];
+
+// Animation state
+let step = -1, playing = false, speed = 900, timer = null;
+let prevHighlight = null;
+
+function highlight(nodeId) {
+  if (prevHighlight) {
+    svg.select(`.node[data-id="${prevHighlight}"] circle`)
+      .transition().duration(200).attr("stroke-width",2).attr("fill","#0d1117");
+  }
+  const n = nodes.find(n=>n.id===nodeId);
+  svg.select(`.node[data-id="${nodeId}"] circle`)
+    .transition().duration(300)
+    .attr("stroke-width",3.5)
+    .attr("fill", d3.color(n.color).copy({opacity:0.15}));
+
+  // Pulse effect
+  svg.append("circle").attr("cx",n.x).attr("cy",n.y).attr("r",n.r)
+    .attr("fill","none").attr("stroke",n.color).attr("stroke-width",2).attr("opacity",0.6)
+    .transition().duration(600).attr("r",n.r+15).attr("opacity",0).remove();
+
+  prevHighlight = nodeId;
+}
+
+function renderStep(idx) {
+  if (idx >= SIM.length) { playing = false; return; }
+  const s = SIM[idx];
+  step = idx;
+  highlight(s.node);
+  d3.select("#s-turn").text(s.turn);
+  d3.select("#s-tokens").text(s.tokens >= 1000 ? (s.tokens/1000).toFixed(1)+"K" : s.tokens);
+  d3.select("#s-tools").text(s.tools);
+  info.html(s.info);
+  d3.select("#step-counter").text(`Step ${idx+1}/${SIM.length}`);
+}
+
+function play() { playing=true; d3.select("#btn-play").classed("active",true); d3.select("#btn-pause").classed("active",false); advance(); }
+function advance() { if(!playing) return; if(step>=SIM.length-1){playing=false;return;} renderStep(step+1); timer=setTimeout(advance,speed); }
+function pause() { playing=false; clearTimeout(timer); d3.select("#btn-play").classed("active",false); d3.select("#btn-pause").classed("active",true); }
+function reset() { pause(); step=-1; if(prevHighlight){ svg.select(`.node[data-id="${prevHighlight}"] circle`).attr("stroke-width",2).attr("fill","#0d1117"); prevHighlight=null; }
+  d3.select("#s-turn").text(0); d3.select("#s-tokens").text(0); d3.select("#s-tools").text(0); d3.select("#step-counter").text(`Step 0/${SIM.length}`);
+  info.html(`<h3>queryLoop() 状态机</h3><p>点击 <strong>Play</strong> 观看完整对话流转。</p>`); }
+
+d3.select("#btn-play").on("click",play);
+d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",reset);
+d3.select("#btn-step").on("click",()=>{ pause(); if(step<SIM.length-1) renderStep(step+1); });
+d3.selectAll(".speed").on("click",function(){ speed=+d3.select(this).attr("data-speed"); d3.selectAll(".speed").classed("active",false); d3.select(this).classed("active",true); });
+
+// Click nodes to jump to related step
+nodeG.selectAll(".node").on("click", function() {
+  const id = d3.select(this).attr("data-id");
+  const idx = SIM.findIndex(s => s.node === id);
+  if (idx >= 0) { pause(); renderStep(idx); }
+});
+
+// Hover
+nodeG.selectAll(".node").on("mouseover", function(event) {
+  const id = d3.select(this).attr("data-id");
+  const n = nodes.find(n=>n.id===id);
+  tip.html(`<strong>${n.label}</strong><br/>${n.phase}`)
+    .style("opacity",1).style("left",(event.pageX+12)+"px").style("top",(event.pageY-20)+"px");
+}).on("mouseout", ()=>tip.style("opacity",0));
+
+setTimeout(play, 600);
+</script>
+</body>
+</html>

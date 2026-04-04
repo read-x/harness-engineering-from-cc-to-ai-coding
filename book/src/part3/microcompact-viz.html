@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>微压缩 — 上下文修剪动画</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1100px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.layout{display:grid;grid-template-columns:1fr 280px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+.msgs{background:#161b22;border-radius:8px;border:1px solid #30363d;padding:12px;max-height:380px;overflow-y:auto}
+.msg{padding:8px 10px;margin:4px 0;border-radius:6px;font-size:12px;border-left:3px solid;transition:all .5s}
+.msg.user{border-color:#58a6ff;background:rgba(88,166,255,.06)}
+.msg.assistant{border-color:#bc8cff;background:rgba(188,140,255,.06)}
+.msg.tool{border-color:#d29922;background:rgba(210,153,34,.06)}
+.msg .tokens{float:right;color:#484f58;font-size:10px}
+.msg .role{font-weight:600;margin-right:6px;font-size:11px}
+.msg.trimmed{border-color:#f47067;background:rgba(248,81,73,.06)}
+.msg.trimmed .old{text-decoration:line-through;color:#484f58}
+.msg.trimmed .new{color:#3fb950;font-weight:500}
+.msg.removed{opacity:0;max-height:0;padding:0;margin:0;overflow:hidden}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat{background:#0d1117;border-radius:6px;padding:8px;text-align:center}
+.stat .val{font-size:1.2em;font-weight:700}
+.stat .label{font-size:10px;color:#8b949e}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>微压缩 — 精准上下文修剪</h1>
+  <div class="subtitle">观察微压缩如何逐条评估消息：保留关键信息、修剪冗余、移除过时内容</div>
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-before" style="color:#f47067">0</div><div class="label">Before (tokens)</div></div>
+    <div class="stat"><div class="val" id="s-after" style="color:#3fb950">0</div><div class="label">After (tokens)</div></div>
+    <div class="stat"><div class="val" id="s-saved" style="color:#58a6ff">0%</div><div class="label">Saved</div></div>
+  </div>
+  <div class="layout">
+    <div class="msgs" id="msgs"></div>
+    <div class="info" id="info">
+      <h3>微压缩（Microcompact）</h3>
+      <p>比自动压缩更精细——不是整体摘要，而是<span class="hl">逐条评估</span>每个消���。</p>
+      <p>三种操作：<span class="hl">保留</span>（重要）、<span class="hl">修剪</span>（提取关键信息）、<span class="hl">移除</span>（过时）。</p>
+    </div>
+  </div>
+</div>
+<script>
+const msgsDiv=d3.select("#msgs"),info=d3.select("#info");
+
+// Messages in conversation
+const messages=[
+  {role:"user",text:"帮我分析 src/parser.rs 的性能问题",tokens:50,action:"keep",reason:"用户原始意图——必须保留"},
+  {role:"assistant",text:"好的，让我先读取文件看看结构...",tokens:80,action:"trim",newText:"[读取 parser.rs]",newTokens:10,reason:"过渡性回复，只保留意图摘要"},
+  {role:"tool",text:"Read(src/parser.rs) → 返回 300 ���代码，包括 parse_token(), parse_expression(), parse_statement() 函数...",tokens:4500,action:"trim",newText:"Read(src/parser.rs) → 300 行，3 个核心函数",newTokens:20,reason:"完整文件内容已过时——只保留结构摘要"},
+  {role:"assistant",text:"分析完成。parser.rs 有 3 个性能问题：\n1. parse_token() 在第 42 行有 O(n²) 的字符串拼接\n2. parse_expression() 缺��缓存导致重复解析\n3. parse_statement() 的 match 分支可以用 lookup table 优化",tokens:800,action:"keep",reason:"核心分析结论——必须保留"},
+  {role:"user",text:"先修复第一个问题",tokens:30,action:"keep",reason:"用户指令——保留"},
+  {role:"assistant",text:"好的，让我编辑 parse_token() 函数。将字符串拼接改为 String::with_capacity() 预分配...",tokens:200,action:"trim",newText:"[编辑 parse_token() 优化字符串分配]",newTokens:15,reason:"编辑意图保留，执行细节修剪"},
+  {role:"tool",text:"Edit(src/parser.rs:42-58) → 将 format!() 链替换为 String::with_capacity(256) + push_str()。diff: -16行 +12行",tokens:3000,action:"trim",newText:"Edit(parser.rs:42-58) ✓ 优化字符串分配",newTokens:15,reason:"diff 细节不再需要——保��操作摘要"},
+  {role:"assistant",text:"修改完成。让我运行 benchmark 验证效果...",tokens:100,action:"remove",reason:"过渡性消息，后续已有 benchmark 结果"},
+  {role:"tool",text:"Bash(cargo bench --bench parser) → parse_token: 12.3ms → 4.1ms (66% improvement), parse_expression: 8.7ms (unchanged), parse_statement: 15.2ms (unchanged)",tokens:500,action:"keep",reason:"Benchmark 结果——关键数据，必须保留"},
+  {role:"assistant",text:"parse_token() 从 12.3ms 降到 4.1ms，提升 66%���现在来修复第二个问题——parse_expression() 的缓存问题。",tokens:150,action:"trim",newText:"parse_token ���化 66%。开始修复 #2 缓存问题",newTokens:20,reason:"保留进度摘要和下���步意图"},
+];
+
+let step=-1,playing=false,speed=800,timer=null;
+let totalBefore=0,totalAfter=0;
+const msgEls=[];
+
+function renderMsg(idx){
+  if(idx>=messages.length){
+    playing=false;
+    const pct=((totalBefore-totalAfter)/totalBefore*100).toFixed(0);
+    info.html(`<h3>微压缩完成</h3><p class="hl">10 条消息扫描完毕</p><p>保留: 4 条 | 修剪: 4 条 | 移除: 1 条 | 待处理: 1 条</p><p>Token 节省: <strong style="color:#3fb950">${pct}%</strong> (${totalBefore} → ${totalAfter})</p><p>关键区别：微压缩保��了所有<strong>结论和数据</strong>，只移除了<strong>过渡性内容和执行细节</strong>。</p>`);
+    return;
+  }
+  step=idx;
+  const m=messages[idx];
+  totalBefore+=m.tokens;
+
+  // Add message
+  const div=msgsDiv.append("div").attr("class","msg "+m.role).style("opacity",0);
+  div.html(`<span class="role">${m.role}</span>${m.text}<span class="tokens">${m.tokens}</span>`);
+  div.transition().duration(300).style("opacity",1);
+  msgEls.push(div);
+
+  // Scroll
+  document.getElementById("msgs").scrollTop=99999;
+
+  // Show info
+  info.html(`<h3>评估: ${m.role} 消息</h3><p>"${m.text.substring(0,60)}..."</p><p>Tokens: ${m.tokens}</p>`);
+
+  // After a delay, show the action
+  setTimeout(()=>{
+    if(m.action==="keep"){
+      div.style("border-left-color","#3fb950");
+      totalAfter+=m.tokens;
+      info.html(`<h3>保留 ✓</h3><p class="hl">${m.reason}</p><p>Tokens: ${m.tokens} (不变)</p>`);
+    } else if(m.action==="trim"){
+      div.classed("trimmed",true);
+      div.html(`<span class="role">${m.role}</span><span class="old">${m.text.substring(0,50)}...</span><br/><span class="new">→ ${m.newText}</span><span class="tokens">${m.tokens}→${m.newTokens}</span>`);
+      totalAfter+=m.newTokens;
+      info.html(`<h3>修剪 ✂</h3><p class="hl">${m.reason}</p><p>${m.tokens} → <strong style="color:#3fb950">${m.newTokens}</strong> tokens (节省 ${((1-m.newTokens/m.tokens)*100).toFixed(0)}%)</p>`);
+    } else if(m.action==="remove"){
+      div.transition().duration(500).style("opacity",.3).style("text-decoration","line-through");
+      info.html(`<h3>移除 ✕</h3><p class="hl">${m.reason}</p><p>释放 ${m.tokens} tokens</p>`);
+    }
+    d3.select("#s-before").text(totalBefore);
+    d3.select("#s-after").text(totalAfter);
+    d3.select("#s-saved").text(totalBefore>0?((totalBefore-totalAfter)/totalBefore*100).toFixed(0)+"%":"0%");
+  }, speed*0.5);
+}
+
+function play(){playing=true;d3.select("#btn-play").classed("active",true);d3.select("#btn-pause").classed("active",false);advance();}
+function advance(){if(!playing)return;if(step>=messages.length-1){renderMsg(messages.length);return;}renderMsg(step+1);timer=setTimeout(advance,speed);}
+function pause(){playing=false;clearTimeout(timer);d3.select("#btn-play").classed("active",false);d3.select("#btn-pause").classed("active",true);}
+function reset(){pause();step=-1;totalBefore=0;totalAfter=0;msgEls.forEach(d=>d.remove());msgEls.length=0;
+  d3.select("#s-before").text("0");d3.select("#s-after").text("0");d3.select("#s-saved").text("0%");
+  info.html(`<h3>微压缩</h3><p>点击 Play 观看逐条消息评估。</p>`);}
+
+d3.select("#btn-play").on("click",play);d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",reset);d3.select("#btn-step").on("click",()=>{pause();if(step<messages.length)renderMsg(step+1);});
+setTimeout(play,600);
+</script>
+</body>
+</html>

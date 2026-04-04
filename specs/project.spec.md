@@ -20,8 +20,8 @@ tags: [book, harness-engineering, claude-code]
 
 ## 已定决策
 
-- 输出格式：每章一个 Markdown 文件，放在 `docs/chapters/` 目录
-- 文件命名：`ch{NN}-{slug}.md`（如 `ch01-tech-stack.md`）
+- 输出格式：每章一个 Markdown 文件，放在 `book/src/partN/` 目录（mdbook 结构）
+- 文件命名：`chNN.md`（如 `book/src/part1/ch01.md`）
 - 源码引用：使用 `restored-src/src/` 下的实际文件路径
 - 写作顺序：按篇分批，每批并行写作同一篇内的各章
 - 图表：使用 Mermaid 语法内嵌，不使用外部图片
@@ -30,7 +30,7 @@ tags: [book, harness-engineering, claude-code]
 ## 边界
 
 ### 允许修改
-- docs/chapters/**
+- book/src/**
 - docs/book-outline.md
 - specs/**
 

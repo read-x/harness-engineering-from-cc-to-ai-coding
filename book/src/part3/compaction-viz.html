@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自动压缩 — Token 仪表盘</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+h1{font-size:1.4em;color:#58a6ff;margin-bottom:4px}
+.subtitle{color:#8b949e;font-size:0.85em;margin-bottom:16px}
+.controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.btn{padding:6px 14px;border:1px solid #30363d;border-radius:6px;background:#21262d;color:#c9d1d9;cursor:pointer;font-size:12px;transition:all .2s}
+.btn:hover{background:#30363d;border-color:#58a6ff}
+.btn.active{background:#1f6feb;border-color:#58a6ff;color:#fff}
+.speed-label{color:#8b949e;font-size:12px}
+.layout{display:grid;grid-template-columns:1fr 320px;gap:16px}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+.bar-area{background:#161b22;border-radius:8px;border:1px solid #30363d;padding:16px}
+.messages{background:#161b22;border-radius:8px;border:1px solid #30363d;padding:12px;max-height:400px;overflow-y:auto}
+.info{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;font-size:13px;line-height:1.6}
+.info h3{color:#58a6ff;font-size:14px;margin-bottom:8px}
+.info p{color:#8b949e;margin-bottom:6px}
+.info .hl{color:#c9d1d9}
+.info code{background:#0d1117;padding:2px 6px;border-radius:4px;font-size:11px;color:#79c0ff}
+.msg{padding:8px 10px;margin:4px 0;border-radius:6px;font-size:12px;border-left:3px solid;transition:all .3s;position:relative}
+.msg.user{border-color:#58a6ff;background:rgba(88,166,255,.08)}
+.msg.assistant{border-color:#bc8cff;background:rgba(188,140,255,.08)}
+.msg.tool{border-color:#d29922;background:rgba(210,153,34,.08)}
+.msg.system{border-color:#8b949e;background:rgba(139,148,158,.08)}
+.msg.compact{border-color:#39d353;background:rgba(57,211,83,.08)}
+.msg.removed{opacity:.3;text-decoration:line-through;transform:scaleY(.5);max-height:0;padding:0;margin:0;overflow:hidden}
+.msg .tokens{float:right;font-size:10px;color:#484f58}
+.msg .role{font-weight:600;margin-right:4px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.stat{background:#0d1117;border-radius:6px;padding:8px;text-align:center}
+.stat .val{font-size:1.2em;font-weight:700}
+.stat .label{font-size:10px;color:#8b949e}
+.bar-label{display:flex;justify-content:space-between;font-size:11px;color:#8b949e;margin-bottom:4px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>自动压缩 — Token 仪表盘</h1>
+  <div class="subtitle">观察 200K 上下文窗口如何被填满、何时触发压缩、压缩后的 token 回收</div>
+  <div class="controls">
+    <button class="btn active" id="btn-play">Play</button>
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <button class="btn" id="btn-step">Step</button>
+    <span class="speed-label">Speed:</span>
+    <button class="btn speed" data-speed="1500">Slow</button>
+    <button class="btn speed active" data-speed="700">Normal</button>
+    <button class="btn speed" data-speed="300">Fast</button>
+    <span style="margin-left:auto;font-size:11px;color:#8b949e" id="step-counter">Step 0/0</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-total" style="color:#58a6ff">0</div><div class="label">Current Tokens</div></div>
+    <div class="stat"><div class="val" id="s-pct" style="color:#d29922">0%</div><div class="label">Usage</div></div>
+    <div class="stat"><div class="val" id="s-msgs" style="color:#bc8cff">0</div><div class="label">Messages</div></div>
+    <div class="stat"><div class="val" id="s-compacts" style="color:#39d353">0</div><div class="label">Compactions</div></div>
+  </div>
+  <div class="layout">
+    <div>
+      <div class="bar-area">
+        <div class="bar-label"><span>0</span><span id="bar-threshold">Threshold: 167K</span><span>200K</span></div>
+        <svg id="bar" width="100%" height="50" viewBox="0 0 800 50"></svg>
+        <div class="bar-label" style="margin-top:4px"><span id="bar-zone" style="color:#3fb950">Safe zone</span></div>
+      </div>
+      <div class="messages" id="msgs"></div>
+    </div>
+    <div class="info" id="info">
+      <h3>自动压缩（Auto Compaction）</h3>
+      <p>Claude Code 的 200K 上下文窗口不是无限的。当 token 消耗达到 <span class="hl">167K</span>（83.5%）时，自动压缩触发。</p>
+      <p>压缩过程：LLM 生成对话摘要 → 替换旧消息 → token 回收。</p>
+      <p><code>AUTOCOMPACT_BUFFER_TOKENS = 13,000</code></p>
+    </div>
+  </div>
+</div>
+<script>
+const WINDOW = 200000;
+const THRESHOLD = 167000;
+const WARNING = 147000;
+const BLOCKING = 177000;
+
+// Draw bar
+const bar = d3.select("#bar");
+// Background
+bar.append("rect").attr("x",0).attr("y",10).attr("width",800).attr("height",30).attr("rx",6).attr("fill","#0d1117").attr("stroke","#30363d");
+// Threshold marker
+const thX = THRESHOLD/WINDOW*800;
+bar.append("line").attr("x1",thX).attr("y1",5).attr("x2",thX).attr("y2",45).attr("stroke","#d29922").attr("stroke-width",2).attr("stroke-dasharray","4,3");
+bar.append("text").attr("x",thX).attr("y",4).attr("text-anchor","middle").attr("fill","#d29922").attr("font-size",9).text("167K");
+// Warning marker
+const wX = WARNING/WINDOW*800;
+bar.append("line").attr("x1",wX).attr("y1",8).attr("x2",wX).attr("y2",42).attr("stroke","#8b949e").attr("stroke-width",1).attr("stroke-dasharray","2,2");
+// Blocking marker
+const bX = BLOCKING/WINDOW*800;
+bar.append("line").attr("x1",bX).attr("y1",5).attr("x2",bX).attr("y2",45).attr("stroke","#f47067").attr("stroke-width",2).attr("stroke-dasharray","4,3");
+bar.append("text").attr("x",bX).attr("y",4).attr("text-anchor","middle").attr("fill","#f47067").attr("font-size",9).text("177K");
+// Fill bar
+const fill = bar.append("rect").attr("x",1).attr("y",11).attr("width",0).attr("height",28).attr("rx",5).attr("fill","#3fb950");
+// Reserve zones
+bar.append("rect").attr("x",thX).attr("y",11).attr("width",(BLOCKING-THRESHOLD)/WINDOW*800).attr("height",28).attr("fill","#d29922").attr("opacity",.1);
+bar.append("rect").attr("x",bX).attr("y",11).attr("width",(WINDOW-BLOCKING)/WINDOW*800).attr("height",28).attr("fill","#f47067").attr("opacity",.1);
+
+// Simulation
+const SIM = [
+  { action:"add", role:"system", text:"System prompt (constitution + tools)", tokens:8500 },
+  { action:"add", role:"user", text:"帮我重构这个 500 行的文件", tokens:200 },
+  { action:"add", role:"assistant", text:"让我先读取文件内容...", tokens:1200 },
+  { action:"add", role:"tool", text:"Read(src/large-module.ts) → 返回 500 行", tokens:12000 },
+  { action:"add", role:"assistant", text:"分析完成，这个文件有 5 个问题。让我逐个修复...", tokens:3500 },
+  { action:"add", role:"tool", text:"Edit(src/large-module.ts) → 修改第 1 处", tokens:8000 },
+  { action:"add", role:"assistant", text:"第 1 处修复完成。继续第 2 处...", tokens:2800 },
+  { action:"add", role:"tool", text:"Edit(src/large-module.ts) → 修改第 2 处", tokens:7500 },
+  { action:"add", role:"assistant", text:"第 2 处修复完成。还需要读取依赖文件...", tokens:2200 },
+  { action:"add", role:"tool", text:"Read(src/utils.ts) → 返回工具函数", tokens:9000 },
+  { action:"add", role:"assistant", text:"发现 utils.ts 也需要修改...", tokens:3000 },
+  { action:"add", role:"tool", text:"Edit(src/utils.ts) → 重构工具函数", tokens:6500 },
+  { action:"add", role:"assistant", text:"继续修复 large-module.ts 第 3 处...", tokens:2500 },
+  { action:"add", role:"tool", text:"Edit(src/large-module.ts) → 修改第 3 处", tokens:8500 },
+  { action:"add", role:"assistant", text:"第 3 处完成。读取测试文件验证...", tokens:2000 },
+  { action:"add", role:"tool", text:"Read(tests/module.test.ts) → 测试文件", tokens:11000 },
+  { action:"add", role:"assistant", text:"测试需要更新，修改测试用例...", tokens:3500 },
+  { action:"add", role:"tool", text:"Edit(tests/module.test.ts) → 更新 15 个测试", tokens:14000 },
+  { action:"add", role:"assistant", text:"让我运行测试确认...", tokens:1500 },
+  { action:"add", role:"tool", text:"Bash(npm test) → 运行测试", tokens:5000 },
+  { action:"add", role:"assistant", text:"2 个测试失败，修复...", tokens:2800 },
+  { action:"add", role:"tool", text:"Edit(tests/module.test.ts) → 修复失败的测试", tokens:6000 },
+  { action:"add", role:"assistant", text:"继续修复第 4 处和第 5 处...", tokens:4000 },
+  { action:"add", role:"tool", text:"Edit(src/large-module.ts) → 修改第 4-5 处", tokens:12000 },
+  { action:"add", role:"tool", text:"Read(src/types.ts) → 检查类型定义", tokens:8000 },
+  { action:"add", role:"assistant", text:"类型定义也需要更新...", tokens:3000 },
+  // This should push past threshold ~167K
+  { action:"add", role:"tool", text:"Edit(src/types.ts) → 更新类型", tokens:9000 },
+  // COMPACTION TRIGGER!
+  { action:"compact", text:"Auto Compaction 触发! LLM 生成对话摘要...",
+    info:`<h3>自动压缩触发!</h3><p class="hl">Token 总量超过 167K 阈值（83.5% 窗口使用率）</p><p>压缩过程：</p><p>1. <code>getAutoCompactThreshold()</code> 判断超过阈值</p><p>2. 调用 LLM 生成对话摘要（使用 MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20K）</p><p>3. 摘要模板要求保留：文件操作、代码片段、工作计划</p><p>4. 旧消息被替换为摘要 → token 大幅回收</p><p><code>restored-src/src/services/compact/autoCompact.ts:72</code></p>`,
+    removeBefore: 24, summaryTokens: 15000 },
+  // Post-compaction: continue
+  { action:"add", role:"assistant", text:"（压缩后继续）所有修改完成，最终验证...", tokens:2500 },
+  { action:"add", role:"tool", text:"Bash(npm test) → 全部通过 ✓", tokens:3000 },
+  { action:"add", role:"assistant", text:"重构完成！5 处修改 + 测试更新，所有测试通过。", tokens:2000 },
+];
+
+let step=-1, playing=false, speed=700, timer=null, totalTokens=0, msgCount=0, compactCount=0;
+const msgEls = [];
+const msgsDiv = d3.select("#msgs");
+
+function updateBar() {
+  const w = Math.min(totalTokens/WINDOW*800, 798);
+  let c = "#3fb950";
+  let zone = "Safe zone";
+  if(totalTokens > BLOCKING) { c="#f47067"; zone="BLOCKING — 硬限制!"; }
+  else if(totalTokens > THRESHOLD) { c="#f85149"; zone="超过阈值 — 压缩触发!"; }
+  else if(totalTokens > WARNING) { c="#d29922"; zone="Warning zone"; }
+
+  fill.transition().duration(400).attr("width",w).attr("fill",c);
+  d3.select("#bar-zone").text(zone).style("color",c);
+  d3.select("#s-total").text(totalTokens>=1000?(totalTokens/1000).toFixed(1)+"K":totalTokens);
+  d3.select("#s-pct").text((totalTokens/WINDOW*100).toFixed(1)+"%");
+  d3.select("#s-msgs").text(msgCount);
+  d3.select("#s-compacts").text(compactCount);
+}
+
+function addMsg(role, text, tokens) {
+  msgCount++;
+  const div = msgsDiv.append("div").attr("class","msg "+role).style("opacity",0);
+  div.html(`<span class="role">${role}</span>${text}<span class="tokens">${(tokens/1000).toFixed(1)}K</span>`);
+  div.transition().duration(300).style("opacity",1);
+  totalTokens += tokens;
+  msgEls.push({el:div, tokens});
+  // Auto scroll
+  const container = document.getElementById("msgs");
+  container.scrollTop = container.scrollHeight;
+}
+
+function doCompact(s) {
+  compactCount++;
+  // Animate removal of old messages
+  const toRemove = msgEls.splice(0, s.removeBefore);
+  let tokensRemoved = 0;
+  toRemove.forEach((m,i) => {
+    tokensRemoved += m.tokens;
+    m.el.transition().delay(i*50).duration(400).style("opacity",0).style("max-height","0px")
+      .style("padding","0").style("margin","0").remove();
+  });
+  totalTokens -= tokensRemoved;
+  // Add summary message
+  setTimeout(() => {
+    const div = msgsDiv.insert("div",":first-child").attr("class","msg compact").style("opacity",0);
+    div.html(`<span class="role">summary</span>对话摘要：文件重构进度 + 代码变更记录<span class="tokens">${(s.summaryTokens/1000).toFixed(1)}K</span>`);
+    div.transition().duration(400).style("opacity",1);
+    totalTokens += s.summaryTokens;
+    msgCount = msgEls.length + 1;
+    updateBar();
+  }, toRemove.length * 50 + 500);
+}
+
+function renderStep(idx) {
+  if(idx>=SIM.length){playing=false;return;}
+  step=idx;
+  const s=SIM[idx];
+  d3.select("#step-counter").text(`Step ${idx+1}/${SIM.length}`);
+
+  if(s.action==="add") {
+    addMsg(s.role, s.text, s.tokens);
+    updateBar();
+    // Default info
+    const pct = (totalTokens/WINDOW*100).toFixed(1);
+    const remaining = ((THRESHOLD-totalTokens)/1000).toFixed(0);
+    if(totalTokens < THRESHOLD) {
+      d3.select("#info").html(`<h3>消息 ${msgCount}</h3><p><span class="hl">${s.role}</span>: ${s.text}</p><p>+${(s.tokens/1000).toFixed(1)}K tokens → 总计 ${(totalTokens/1000).toFixed(1)}K (${pct}%)</p><p>距离压缩阈值还有 <strong>${remaining}K</strong> tokens</p>`);
+    } else {
+      d3.select("#info").html(`<h3>接近阈值!</h3><p class="hl">Token 使用率 ${pct}% — 即将触发压缩</p><p>阈值: 167K, 当前: ${(totalTokens/1000).toFixed(1)}K</p><p><code>AUTOCOMPACT_BUFFER_TOKENS = 13,000</code></p>`);
+    }
+  } else if(s.action==="compact") {
+    d3.select("#info").html(s.info);
+    doCompact(s);
+  }
+}
+
+function play(){playing=true;d3.select("#btn-play").classed("active",true);d3.select("#btn-pause").classed("active",false);advance();}
+function advance(){if(!playing)return;if(step>=SIM.length-1){playing=false;return;}renderStep(step+1);timer=setTimeout(advance,speed);}
+function pause(){playing=false;clearTimeout(timer);d3.select("#btn-play").classed("active",false);d3.select("#btn-pause").classed("active",true);}
+function reset(){pause();step=-1;totalTokens=0;msgCount=0;compactCount=0;msgEls.length=0;msgsDiv.selectAll("*").remove();
+  fill.attr("width",0).attr("fill","#3fb950");updateBar();d3.select("#step-counter").text(`Step 0/${SIM.length}`);
+  d3.select("#info").html(`<h3>自动压缩（Auto Compaction）</h3><p>点击 <strong>Play</strong> 观看 200K 窗口被逐步填满直到触发压缩。</p>`);}
+
+d3.select("#btn-play").on("click",play);
+d3.select("#btn-pause").on("click",pause);
+d3.select("#btn-reset").on("click",reset);
+d3.select("#btn-step").on("click",()=>{pause();if(step<SIM.length-1)renderStep(step+1);});
+d3.selectAll(".speed").on("click",function(){speed=+d3.select(this).attr("data-speed");d3.selectAll(".speed").classed("active",false);d3.select(this).classed("active",true);});
+setTimeout(play,600);
+</script>
+</body>
+</html>
