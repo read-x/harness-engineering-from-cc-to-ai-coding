@@ -80,3 +80,4 @@
 - [附录 C：术语表](./appendix/c-glossary.md)
 - [附录 D：89 个 Feature Flag 完整清单](./appendix/d-feature-flags.md)
 - [附录 E：版本演化记录](./appendix/e-version-evolution.md)
+- [附录 F：端到端案例追踪](./appendix/f-e2e-traces.md)

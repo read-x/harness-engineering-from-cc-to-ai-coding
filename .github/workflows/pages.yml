@@ -25,6 +25,11 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Install mdBook
         run: cargo install mdbook --no-default-features --features search --vers "^0.4" --locked
 
@@ -36,7 +41,11 @@ jobs:
           mkdir -p dist/en
           cp -R book/book/. dist/
           cp -R book-en/book/. dist/en/
+          npx --yes pagefind@latest --site dist
           touch dist/.nojekyll
+
+      - name: Chapter quality check
+        run: bash scripts/check-chapter-quality.sh
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4

@@ -1,5 +1,7 @@
 # 第20b章：Teams 与多进程协作
 
+> **定位**：本章分析 Claude Code 的 Swarm 团队协作机制——平面结构的多 Agent 协作模型。前置依赖：第20章。适用场景：想深入了解 CC 的 Swarm 团队协作机制——包括 TaskList 调度、DAG 依赖、Mailbox 通信的读者。
+
 ## 为什么单独讨论 Teams
 
 第20章介绍了 Claude Code 的三种 Agent 派生模式——子 Agent、Fork 和协调者——它们的共同点是"父派生子"的层级关系。Teams（队友系统）是一个不同的维度：它创建一个**平面结构的团队**，团队中的 Agent 通过消息传递协作，而非层级调用。这种差异不仅体现在架构上，更体现在通信协议、权限同步和生命周期管理等工程实现中。
@@ -152,7 +154,70 @@ to: z.string().describe(
 
 ---
 
-## 20b.3 异步 Agent 的生命周期
+## 20b.3 真正的调度内核：TaskList、Claim Loop 与 Idle Hooks
+
+如果只看到 `TeamCreateTool`、`SendMessageTool` 和 Mailbox，很容易把 Teams 理解成"一组能互发消息的 Agent"。但 Claude Code 的 Swarm 真正有价值的地方，不是聊天，而是**共享任务图**。`TeamCreate` 的提示词直接写明了这一点：`Teams have a 1:1 correspondence with task lists (Team = TaskList)`。创建团队时，`TeamCreateTool` 不只写 `TeamFile`，还会重置并创建对应的任务目录，然后把 Leader 的 `taskListId` 绑定到团队名上。这意味着 Teams 从一开始就不是"先有团队，任务只是附属品"，而是**团队和任务表是同一个运行时对象的两个视图**。
+
+### Task 不是 Todo，而是 DAG 节点
+
+`utils/tasks.ts` 中的 `Task` 结构包含：
+
+```typescript
+{
+  id: string,
+  owner?: string,
+  status: 'pending' | 'in_progress' | 'completed',
+  blocks: string[],
+  blockedBy: string[],
+}
+```
+
+这里最关键的不是 `status`，而是 `blocks` 和 `blockedBy`。它们把任务列表从普通的 Todo 清单提升成一个**显式依赖图**：某个任务只有在所有 blocker 都完成后才算可执行。这种设计让 Leader 可以先创建整批有依赖关系的工作项，再把"什么时候可以并行"交给运行时，而不必在提示词里反复口头协调。
+
+这也是为什么 `TeamCreate` 的提示词会强调："teammates should check TaskList periodically, especially after completing each task, to find available work or see newly unblocked tasks"。Claude Code 并不要求每个队友都拥有一份完整的全局计划推理能力；它要求队友**回到共享任务图上读状态**。
+
+### 自动 Claim：Swarm 的最小调度器
+
+真正把这张任务图驱动起来的是 `useTaskListWatcher.ts`。这个 watcher 会在任务目录变化或 Agent 重新空闲时触发一次检查，自动挑选一个可工作的任务：
+
+- `status === 'pending'`
+- `owner` 为空
+- `blockedBy` 中的任务都已完成
+
+源码中的 `findAvailableTask()` 正是按这个条件筛选。找到任务后，运行时先 `claimTask()` 抢占 owner，再把任务格式化成 prompt 交给 Agent 执行；如果提交失败，还会释放 claim。这里有两个很重要的工程含义：
+
+1. **调度和推理分离**。模型不需要自己在自然语言里判断"哪个任务现在没被别人做、而且依赖已经解开"；运行时先把候选工作缩到一个明确任务。
+2. **并行来自共享状态，而不是消息协商**。多个 Agent 能同时推进，不是因为它们彼此足够聪明，而是因为 claim + blocker 检查把冲突显式编码进了状态机。
+
+从这个角度看，Claude Code 的 Swarm 其实已经具备一个很小但完整的调度器：**任务图 + 原子 claim + 状态转移**。Mailbox 只是协作补充，不是主调度面。
+
+### 回合结束后的事件面：TaskCompleted 与 TeammateIdle
+
+Swarm 的另一个关键点是：队友在一轮执行结束后，不是简单"停下"，而是进入事件驱动的收尾阶段。`query/stopHooks.ts` 里，当当前执行者是 teammate 时，Claude Code 会在普通 Stop hooks 之后继续运行两类专用事件：
+
+- `TaskCompleted`：对当前队友拥有的 `in_progress` 任务触发完成钩子
+- `TeammateIdle`：队友进入空闲状态时触发钩子
+
+这使得 Teams 不只是一个 pull-based 系统，也不是纯 push-based 系统，而是两者叠加：
+
+- **pull**：空闲队友回到 TaskList，继续 claim 新任务
+- **push**：任务完成和队友空闲会触发事件，通知 Leader 或驱动后续自动化
+
+换句话说，Claude Code 的 Swarm 不是"一群会发消息的 agent"，而是**共享任务图 + durable mailbox + 回合结束事件**共同构成的协作内核。
+
+### 这不是共享内存，而是共享状态
+
+这里有一个措辞要非常小心。Teams 看起来像"多个 Agent 共享一个工作区"，但按源码更准确的说法不是"共享内存"，而是三层共享状态：
+
+- **共享任务状态**：`~/.claude/tasks/{team-name}/`
+- **共享通信状态**：`~/.claude/teams/{team}/inboxes/*.json`
+- **共享团队配置**：`~/.claude/teams/{team}/config.json`
+
+In-Process teammate 只是在物理运行位置上变成同进程，并通过 `AsyncLocalStorage` 保存自己的身份上下文；它没有把整个系统提升成一个通用 blackboard shared-memory runtime。这个区分很重要，因为它决定了 Claude Code Swarm 的真正可迁移模式：**先把协作状态外化，再让不同执行单元围绕它协作**。
+
+---
+
+## 20b.4 异步 Agent 的生命周期
 
 当 `shouldRunAsync` 为 `true` 时（由 `run_in_background`、`background: true`、协调者模式、Fork 模式、助手模式等任一条件触发，第 567 行），Agent 进入异步生命周期：
 
@@ -177,7 +242,7 @@ Agent 完成后，如果 worktree 没有变更（与创建时的 HEAD commit 比
 
 ---
 
-## 20b.4 Teams 实现细节：后端、通信、权限与记忆
+## 20b.5 Teams 实现细节：后端、通信、权限与记忆
 
 > 本节是 20b.1（队友概述）的实现层深入。20b.1 回答"Teams 是什么"——平面结构团队、TeamCreateTool、TeammateAgentContext 类型；本节回答"Teams 怎么跑起来"——进程管理、通信协议、权限同步、共享记忆的具体工程实现。
 >

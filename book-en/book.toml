@@ -12,6 +12,9 @@ build-dir = "book"
 [output.html]
 default-theme = "light"
 preferred-dark-theme = "ayu"
-additional-js = ["mermaid.min.js", "mermaid-init.js", "language-switcher.js"]
-additional-css = ["language-switcher.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "language-switcher.js", "pagefind-search.js"]
+additional-css = ["language-switcher.css", "pagefind-search.css"]
 site-url = "/harness-engineering-from-cc-to-ai-coding/en/"
+
+[output.html.search]
+enable = false

@@ -193,4 +193,61 @@ function rateMessage(messageUuid, sentiment) {
 
 ---
 
+## v2.1.91 → v2.1.92（增量变化）
+
+> 基于 v2.1.91 与 v2.1.92 bundle 信号差异提取。完整对比报告见 `docs/version-diffs/v2.1.88-vs-v2.1.92.md`。
+
+### 概览
+
+| 指标 | v2.1.91 | v2.1.92 | 增量 |
+|------|---------|---------|------|
+| cli.js 大小 | 12.5MB | 12.6MB | +59KB |
+| Tengu 事件 | 860 | 857 | +19 / -21（净 -3） |
+| 环境变量 | 183 | 186 | +3 |
+| seccomp 二进制 | 无 | arm64 + x64 | **新增** |
+
+### 关键新增
+
+| 子系统 | 新增信号 | 影响章节 | 分析 |
+|--------|---------|---------|------|
+| **工具** | `advisor_command`, `advisor_dialog_shown` + 10 个 advisor_* 标识符 | ch04 | 全新 AdvisorTool——第一个非执行类工具，有独立模型调用链 |
+| **工具** | `tool_result_dedup` | ch04 | 工具结果去重，与 v2.1.91 的 `file_read_reread` 构成输入/输出双侧去重 |
+| **安全** | `vendor/seccomp/{arm64,x64}/apply-seccomp` | ch16 | 系统层 seccomp 沙箱，替代 v2.1.91 移除的 tree-sitter 应用层分析 |
+| **Hook** | `stop_hook_added`, `stop_hook_command`, `stop_hook_removed` | ch18 | Stop Hook 运行时动态添加/移除——Hook 系统首次支持运行时管理 |
+| **认证** | `bedrock_setup_started/complete/cancelled`, `oauth_bedrock_wizard_launched` | ch05 | AWS Bedrock 引导式设置向导 |
+| **认证** | `oauth_platform_docs_opened` | ch05 | OAuth 流程中打开平台文档 |
+| **工具** | `bash_rerun_used` | ch04 | Bash 命令重跑功能 |
+| **模型** | `rate_limit_options_menu_select_team` | — | 限速时的 Team 选项 |
+
+### 关键移除
+
+| 移除信号 | 分析 |
+|---------|------|
+| `session_tagged`, `tag_command_*`（5 个） | Session 标签系统被完全移除 |
+| `sm_compact` | 旧压缩事件被清理（v2.1.91 已引入 cold_compact 替代） |
+| `skill_improvement_survey` | 技能改进调查结束 |
+| `pid_based_version_locking` | PID 版本锁机制移除 |
+| `compact_streaming_retry` | 压缩流式重试被清理 |
+| `ultraplan_model` | Ultraplan 模型事件重构 |
+| 6 个随机代码名实验事件 | 旧 A/B 测试结束（cobalt_frost, copper_bridge 等） |
+
+### 新增环境变量
+
+| 变量 | 用途 |
+|------|------|
+| `CLAUDE_CODE_EXECPATH` | 可执行文件路径 |
+| `CLAUDE_CODE_SIMULATE_PROXY_USAGE` | 代理使用模拟（测试用） |
+| `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK` | 跳过 Fast Mode 组织级检查 |
+
+### 设计趋势
+
+v2.1.91→v2.1.92 的增量较小但方向明确：
+
+1. **安全策略从应用层下沉到系统层**（tree-sitter → seccomp）
+2. **工具体系从纯执行扩展到建议**（AdvisorTool）
+3. **配置管理从纯静态走向运行时可变**（Stop Hook 动态管理）
+4. **企业接入门槛持续降低**（Bedrock 向导化）
+
+---
+
 *使用 `scripts/cc-version-diff.sh` 生成差异数据，`docs/anchor-points.md` 提供子系统锚点定位*
