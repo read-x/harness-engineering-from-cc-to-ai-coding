@@ -4,8 +4,13 @@
 
 set -euo pipefail
 
-BOOK_DIR="$(cd "$(dirname "$0")/../book/src" && pwd)"
-RESTORED_SRC="$(cd "$(dirname "$0")/../restored-src" && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BOOK_DIR="$REPO_ROOT/book/src"
+RESTORED_SRC="$REPO_ROOT/restored-src"
+HAS_RESTORED_SRC=0
+if [ -d "$RESTORED_SRC/src" ]; then
+    HAS_RESTORED_SRC=1
+fi
 PASS=0
 WARN=0
 FAIL=0
@@ -45,20 +50,24 @@ echo ""
 echo "--- 源码路径有效性检查 ---"
 
 invalid_paths=0
-for chapter in "$BOOK_DIR"/part*/ch*.md; do
-    # 提取所有 restored-src/src/ 路径（去掉行号部分）
-    paths=$(grep -oE 'restored-src/src/[a-zA-Z0-9_./-]+\.(ts|tsx|js)' "$chapter" 2>/dev/null | sort -u || true)
-    for path in $paths; do
-        full_path="$RESTORED_SRC/src/${path#restored-src/src/}"
-        if [ ! -f "$full_path" ]; then
-            echo "  INVALID: $(basename "$chapter"): $path"
-            invalid_paths=$((invalid_paths + 1))
-        fi
+if [ "$HAS_RESTORED_SRC" -eq 1 ]; then
+    for chapter in "$BOOK_DIR"/part*/ch*.md; do
+        # 提取所有 restored-src/src/ 路径（去掉行号部分）
+        paths=$(grep -oE 'restored-src/src/[a-zA-Z0-9_./-]+\.(ts|tsx|js)' "$chapter" 2>/dev/null | sort -u || true)
+        for path in $paths; do
+            full_path="$RESTORED_SRC/src/${path#restored-src/src/}"
+            if [ ! -f "$full_path" ]; then
+                echo "  INVALID: $(basename "$chapter"): $path"
+                invalid_paths=$((invalid_paths + 1))
+            fi
+        done
     done
-done
 
-if [ "$invalid_paths" -eq 0 ]; then
-    echo "  所有源码路径有效"
+    if [ "$invalid_paths" -eq 0 ]; then
+        echo "  所有源码路径有效"
+    fi
+else
+    echo "  SKIP: 当前 checkout 不包含 restored-src/，跳过源码路径有效性检查"
 fi
 
 echo ""
