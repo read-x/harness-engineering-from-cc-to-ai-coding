@@ -246,6 +246,20 @@ Anthropic 于 2026 年 4 月正式封禁第三方工具通过 OAuth 使用订阅
 
 Claude Code 的 `getCacheControl()` 函数（`restored-src/src/services/api/claude.ts:358-374`）精心设计了全局/组织/会话三级缓存断点。通过 CLI 发送的请求自动享受这套缓存优化。直接调 API 的第三方工具无法复用这些缓存——这正是成本问题的根源。
 
+**一键判断：是否 spawn `claude` 子进程？**
+
+这是最简洁的合规判断标准。所有通过 `claude` CLI 子进程通信的方式都走了 CC 的完整基础设施（prompt cache + 遥测 + 权限检查），Anthropic 的成本可控；直接调 API 则绕过了一切。
+
+| 方式 | spawn process? | 合规 |
+|------|:---:|------|
+| cc-sdk `query()` | 是 — `Command::new("claude")` | 合规 |
+| cc-sdk `llm::query()` | 是 — 同上，加 `--tools ""` | 合规 |
+| Agent SDK (`@anthropic-ai/claude-code`) | 是 — 官方 SDK spawn claude | 合规 |
+| `claude -p "..."` Shell 脚本 | 是 | 合规 |
+| MCP Server 被 CC 调用 | 是 — CC 发起的 | 合规 |
+| 提取 OAuth token → `fetch("api.anthropic.com")` | **否** — 绕过 CLI | **违规** |
+| OpenClaw 等第三方 Agent | **否** — 直接调 API | **违规** |
+
 ### G.6.4 本书示例代码的合规性
 
 本书第 30 章的 Code Review Agent 使用以下方式：

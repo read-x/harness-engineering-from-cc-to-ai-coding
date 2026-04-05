@@ -46,6 +46,7 @@
 - [Chapter 17: YOLO Classifier](./part5/ch17.md)
 - [Chapter 17b: Prompt Injection Defense — From Unicode Sanitization to Defense in Depth](./part5/ch17b.md)
 - [Chapter 18: Hooks — User-Defined Interception Points](./part5/ch18.md)
+- [Chapter 18b: Sandbox System — Multi-Platform Isolation from Seatbelt to Bubblewrap](./part5/ch18b.md)
 - [Chapter 19: CLAUDE.md — User Instructions as an Override Layer](./part5/ch19.md)
 
 ---

@@ -46,6 +46,7 @@
 - [第17章：YOLO 分类器](./part5/ch17.md)
 - [第17b章：提示注入防御 — 从 Unicode 清洗到纵深防御](./part5/ch17b.md)
 - [第18章：Hooks — 用户自定义拦截点](./part5/ch18.md)
+- [第18b章：沙箱系统 — 从 Seatbelt 到 Bubblewrap 的多平台隔离](./part5/ch18b.md)
 - [第19章：CLAUDE.md — 用户指令作为覆盖层](./part5/ch19.md)
 
 ---

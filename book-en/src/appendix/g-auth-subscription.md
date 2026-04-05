@@ -246,6 +246,20 @@ Dangerous path:
 
 Claude Code's `getCacheControl()` function (`restored-src/src/services/api/claude.ts:358-374`) carefully designs three-level cache breakpoints: global, organization, and session. Requests sent through the CLI automatically benefit from this cache optimization. Third-party tools calling the API directly cannot reuse these caches — this is the root cause of the cost problem.
 
+**Quick Check: Does it spawn a `claude` subprocess?**
+
+This is the simplest compliance criterion. All approaches that communicate through a `claude` CLI subprocess go through CC's full infrastructure (prompt cache + telemetry + permission checks), keeping Anthropic's costs manageable; calling the API directly bypasses everything.
+
+| Approach | Spawns process? | Compliant |
+|----------|:---:|-----------|
+| cc-sdk `query()` | Yes — `Command::new("claude")` | Compliant |
+| cc-sdk `llm::query()` | Yes — same, plus `--tools ""` | Compliant |
+| Agent SDK (`@anthropic-ai/claude-code`) | Yes — official SDK spawns claude | Compliant |
+| `claude -p "..."` Shell script | Yes | Compliant |
+| MCP Server called by CC | Yes — CC initiates it | Compliant |
+| Extract OAuth token -> `fetch("api.anthropic.com")` | **No** — bypasses CLI | **Non-compliant** |
+| OpenClaw and other third-party Agents | **No** — calls API directly | **Non-compliant** |
+
 ### G.6.4 Compliance of This Book's Example Code
 
 The Code Review Agent in Chapter 30 of this book uses the following approaches:
